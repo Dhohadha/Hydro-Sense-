@@ -1,0 +1,22 @@
+// Function to copy the alarm file to a location that can be accessed in the background
+Future<void> _copyAlarmFileForBackground() async {
+  if (Platform.isAndroid) {
+    try {
+      // Load the alarm asset
+      final ByteData data = await rootBundle.load('assets/alarm.mp3');
+      final List<int> bytes = data.buffer.asUint8List();
+
+      // Get a directory that can be accessed in the background
+      final Directory appDir = await getApplicationDocumentsDirectory();
+      final String filePath = '${appDir.path}/alarm.mp3';
+
+      // Write the file
+      final File file = File(filePath);
+      await file.writeAsBytes(bytes);
+
+      print('Alarm file copied to: $filePath');
+    } catch (e) {
+      print('Error copying alarm file for background use: $e');
+    }
+  }
+}
