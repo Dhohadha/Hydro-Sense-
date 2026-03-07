@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "492373984507",
+    "project_id": "pond-management-system-d6d04",
+    "storage_bucket": "pond-management-system-d6d04.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:492373984507:android:d45ab5acc2e5b7f6cddc5e",
+        "android_client_info": {
+          "package_name": "com.example.gf1"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAF7ttkS8g5bUZ8-xzcd7ZxfsDar_eHVuk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:492373984507:android:3e4924cbe2bbc930cddc5e",
+        "android_client_info": {
+          "package_name": "com.yubhiantech.pondmonitoring"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAF7ttkS8g5bUZ8-xzcd7ZxfsDar_eHVuk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
