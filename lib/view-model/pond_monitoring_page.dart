@@ -1,61 +1,169 @@
-  import 'package:flutter/material.dart';
-  import 'package:cloud_firestore/cloud_firestore.dart';
-  import 'package:firebase_auth/firebase_auth.dart';
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:mqtt_client/mqtt_client.dart';
+import 'package:mqtt_client/mqtt_server_client.dart';
 
-  import 'package:gf1/view/services/monitoring_service.dart';
-  import 'package:gf1/view/services/api_service.dart';
-  import 'package:gf1/view/utils/color_constants.dart';
-  // import '../utils/color_constants.dart';
+import 'package:gf1/view/services/monitoring_service.dart';
+import 'package:gf1/view/services/api_service.dart';
+import 'package:gf1/view/services/notification_services.dart';
+import 'package:gf1/view/utils/color_constants.dart';
+// import '../utils/color_constants.dart';
 
-  class PondMonitoringPage extends StatefulWidget {
-    const PondMonitoringPage({super.key});
-    @override
-    State<PondMonitoringPage> createState() => _PondMonitoringPageState();
+class PondMonitoringPage extends StatefulWidget {
+  const PondMonitoringPage({super.key});
+  @override
+  State<PondMonitoringPage> createState() => _PondMonitoringPageState();
+}
+
+class _PondMonitoringPageState extends State<PondMonitoringPage> {
+  final TextEditingController aeratorsController = TextEditingController();
+  final MonitoringService _monitoringService = MonitoringService();
+
+  // MQTT connection for phase currents
+  late MqttServerClient _mqttClient;
+  double _l1 = 0.0, _l2 = 0.0, _l3 = 0.0;
+  final Set<String> _notifiedPhases =
+      {}; // Track which phases already triggered a notification
+
+  // Dropdown selection (persisted in Firestore)
+  String? _selectedLine;
+
+  final _firestore = FirebaseFirestore.instance;
+  final _auth = FirebaseAuth.instance;
+
+  DocumentReference<Map<String, dynamic>> get _userDoc {
+    final uid = _auth.currentUser?.uid;
+    return _firestore.collection('users').doc(uid);
   }
 
-  class _PondMonitoringPageState extends State<PondMonitoringPage> {
-    final TextEditingController aeratorsController = TextEditingController();
-    final MonitoringService _monitoringService = MonitoringService();
-    
+  @override
+  void initState() {
+    super.initState();
+    _monitoringService.start();
+    _loadInitialFromFirestore();
+    _connectMqtt();
+  }
 
-    // Dropdown selection (persisted in Firestore)
-    String? _selectedLine;
+  Future<void> _connectMqtt() async {
+    _mqttClient = MqttServerClient(
+      'broker.emqx.io', // Broker Address
+      'flutter_client_${DateTime.now().millisecondsSinceEpoch}', // Unique Client ID
+    );
 
-    final _firestore = FirebaseFirestore.instance;
-    final _auth = FirebaseAuth.instance;
+    _mqttClient.port = 1883;
+    _mqttClient.keepAlivePeriod = 20;
+    _mqttClient.logging(on: false);
 
-    DocumentReference<Map<String, dynamic>> get _userDoc {
-      final uid = _auth.currentUser?.uid;
-      return _firestore.collection('users').doc(uid);
+    _mqttClient.onConnected = () {
+      debugPrint('✅ MQTT Connected (Pond Monitoring Page)');
+      _mqttClient.subscribe('PMS1/data', MqttQos.atMostOnce);
+    };
+
+    _mqttClient.onDisconnected = () {
+      debugPrint('❌ MQTT Disconnected (Pond Monitoring Page)');
+    };
+
+    final connMessage = MqttConnectMessage()
+        .withClientIdentifier(
+          'flutter_client_${DateTime.now().millisecondsSinceEpoch}',
+        )
+        .startClean()
+        .withWillQos(MqttQos.atMostOnce);
+    _mqttClient.connectionMessage = connMessage;
+
+    try {
+      await _mqttClient.connect();
+    } catch (e) {
+      debugPrint('MQTT connection failed: $e');
+      return;
     }
 
-    @override
-    void initState() {
-      super.initState();
-      _monitoringService.start();
-      _loadInitialFromFirestore();
+    _mqttClient.updates!.listen((
+      List<MqttReceivedMessage<MqttMessage>> events,
+    ) {
+      final recMessage = events[0].payload as MqttPublishMessage;
+      final payload = MqttPublishPayload.bytesToStringAsString(
+        recMessage.payload.message,
+      );
+
+      debugPrint('📩 MQTT Received in Pond Monitoring Page: $payload');
+
+      try {
+        final data = jsonDecode(payload);
+        if (!mounted) return;
+        setState(() {
+          _l1 = (data['l1'] ?? _l1).toDouble();
+          _l2 = (data['l2'] ?? _l2).toDouble();
+          _l3 = (data['l3'] ?? _l3).toDouble();
+        });
+        _checkPhaseNotifications();
+      } catch (e) {
+        debugPrint('❗ Invalid MQTT JSON in Pond Monitoring Page: $e');
+      }
+    });
+  }
+
+  /// Check phase values and send notifications if needed.
+  /// Rule: If ALL three are < 0.03, device is off → no notification.
+  /// Otherwise, notify for each individual phase < 0.03.
+  Future<void> _checkPhaseNotifications() async {
+    // If all three are below threshold, device is likely off → skip
+    if (_l1 < 0.03 && _l2 < 0.03 && _l3 < 0.03) {
+      _notifiedPhases.clear(); // reset since device is off
+      return;
     }
 
-    Future<void> _loadInitialFromFirestore() async {
-      final snap = await _userDoc.get();
-      final data = snap.data() ?? {};
-      final line = (data['selectedLine'] ?? 'line2').toString();
+    final notificationService = NotificationServices();
+    final deviceToken = await NotificationServices.getDeviceToken();
+    if (deviceToken == null) return;
 
-      // Prefill the count input from the active line
-      final int count = line == 'line1'
-          ? (data['noAeratorsLine1'] ?? 0)
-          : (data['noAeratorsLine2'] ?? 0);
+    final phaseValues = {'R Phase': _l1, 'Y Phase': _l2, 'B Phase': _l3};
 
-      setState(() {
-        _selectedLine = line;
-        if (count > 0) {
-          aeratorsController.text = count.toString();
+    for (var entry in phaseValues.entries) {
+      final phaseName = entry.key;
+      final phaseValue = entry.value;
+
+      if (phaseValue < 0.03) {
+        if (!_notifiedPhases.contains(phaseName)) {
+          await notificationService.sendPushNotification(
+            deviceToken: deviceToken,
+            title: "Phase Current Alert ⚡",
+            body:
+                "$phaseName current is very low: ${phaseValue.toStringAsFixed(3)} A",
+          );
+          _notifiedPhases.add(phaseName);
+          debugPrint('🔔 Notification sent for $phaseName: $phaseValue A');
         }
-      });
-
-      // Ensure doc exists
-      await _userDoc.set({'selectedLine': line}, SetOptions(merge: true));
+      } else {
+        // Value recovered → allow re-notification if it drops again
+        _notifiedPhases.remove(phaseName);
+      }
     }
+  }
+
+  Future<void> _loadInitialFromFirestore() async {
+    final snap = await _userDoc.get();
+    final data = snap.data() ?? {};
+    final line = (data['selectedLine'] ?? 'line2').toString();
+
+    // Prefill the count input from the active line
+    final int count = line == 'line1'
+        ? (data['noAeratorsLine1'] ?? 0)
+        : (data['noAeratorsLine2'] ?? 0);
+
+    setState(() {
+      _selectedLine = line;
+      if (count > 0) {
+        aeratorsController.text = count.toString();
+      }
+    });
+
+    // Ensure doc exists
+    await _userDoc.set({'selectedLine': line}, SetOptions(merge: true));
+  }
 
   Future<void> setAeratorBaseline() async {
     FocusScope.of(context).unfocus();
@@ -101,7 +209,9 @@
         perAeratorLine1: (data['perAerator_currentLine1'] ?? 0).toDouble(),
         perAeratorLine2: (data['perAerator_currentLine2'] ?? 0).toDouble(),
       );
-      debugPrint("The data are : ${data['noAeratorsLine1'] ?? 0}, ${data['noAeratorsLine2'] ?? 0}, ${(data['perAerator_currentLine1'] ?? 0).toDouble()}, ${(data['perAerator_currentLine2'] ?? 0).toDouble()}");
+      debugPrint(
+        "The data are : ${data['noAeratorsLine1'] ?? 0}, ${data['noAeratorsLine2'] ?? 0}, ${(data['perAerator_currentLine1'] ?? 0).toDouble()}, ${(data['perAerator_currentLine2'] ?? 0).toDouble()}",
+      );
 
       if (success) {
         debugPrint("PATCH success ✅");
@@ -124,211 +234,226 @@
     );
   }
 
-    /// Handle dropdown changes
-    Future<void> _onLineSelected(String? newLine) async {
-      if (newLine == null || newLine == _selectedLine) return;
+  /// Handle dropdown changes
+  Future<void> _onLineSelected(String? newLine) async {
+    if (newLine == null || newLine == _selectedLine) return;
 
-      setState(() => _selectedLine = newLine);
+    setState(() => _selectedLine = newLine);
 
-      await _userDoc.set({'selectedLine': newLine}, SetOptions(merge: true));
+    await _userDoc.set({'selectedLine': newLine}, SetOptions(merge: true));
 
-      // Prefill aerators input based on newly selected line
-      final snap = await _userDoc.get();
-      final data = snap.data() ?? {};
-      final int count = newLine == 'line1'
-          ? (data['noAeratorsLine1'] ?? 0)
-          : (data['noAeratorsLine2'] ?? 0);
-      aeratorsController.text = count > 0 ? count.toString() : '';
+    // Prefill aerators input based on newly selected line
+    final snap = await _userDoc.get();
+    final data = snap.data() ?? {};
+    final int count = newLine == 'line1'
+        ? (data['noAeratorsLine1'] ?? 0)
+        : (data['noAeratorsLine2'] ?? 0);
+    aeratorsController.text = count > 0 ? count.toString() : '';
 
-      // Fetch fresh data for new line
-      await _monitoringService.refreshDataForNewLineSelection();
+    // Fetch fresh data for new line
+    await _monitoringService.refreshDataForNewLineSelection();
 
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Monitoring switched to $newLine.'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Monitoring switched to $newLine.'),
+        backgroundColor: Colors.green,
+      ),
+    );
+  }
 
-    @override
-    void dispose() {
-      aeratorsController.dispose();
-      super.dispose();
-    }
+  @override
+  void dispose() {
+    aeratorsController.dispose();
+    _mqttClient.disconnect();
+    super.dispose();
+  }
 
-    @override
-    Widget build(BuildContext context) {
-      return Scaffold(
-        backgroundColor: AppColors.background,
-        body: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(20.0),
-            child: StreamBuilder<MonitoringData>(
-              stream: _monitoringService.dataStream,
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
-                  return const SizedBox(
-                    height: 160,
-                    child: Center(child: CircularProgressIndicator()),
-                  );
-                }
-                if (snapshot.hasError) {
-                  return const Center(child: Text("Error loading data"));
-                }
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20.0),
+          child: StreamBuilder<MonitoringData>(
+            stream: _monitoringService.dataStream,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting &&
+                  !snapshot.hasData) {
+                return const SizedBox(
+                  height: 160,
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              }
+              if (snapshot.hasError) {
+                return const Center(child: Text("Error loading data"));
+              }
 
-                final liveCurrent = snapshot.data?.liveCurrentValue ?? "-- A";
-                final workingAerators = snapshot.data?.aeratorsWorkingValue ?? "-- / --";
-                final currentPerAerator = snapshot.data?.currentPerAeratorValue ?? "-- A";
-                final activeLine = snapshot.data?.selectedLine ?? _selectedLine;
-                final r = snapshot.data?.rPhase ?? 0.0;
-final y = snapshot.data?.yPhase ?? 0.0;
-final b = snapshot.data?.bPhase ?? 0.0;
+              final liveCurrent = snapshot.data?.liveCurrentValue ?? "-- A";
+              final workingAerators =
+                  snapshot.data?.aeratorsWorkingValue ?? "-- / --";
+              final currentPerAerator =
+                  snapshot.data?.currentPerAeratorValue ?? "-- A";
+              final activeLine = snapshot.data?.selectedLine ?? _selectedLine;
+              // Using values from local MQTT state as requested
+              final r = _l1;
+              final y = _l2;
+              final b = _l3;
 
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildHeader(),
+                  const SizedBox(height: 24),
+                  _buildLineSelector(activeLine),
+                  const SizedBox(height: 16),
 
-  
-                  return Column( 
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildHeader(),
-                      const SizedBox(height: 24),
-                      _buildLineSelector(activeLine),
-                      const SizedBox(height: 16),
-                      
-                      _InfoCard(
-                        title: "Live Total Current (${activeLine == 'line1' ? 'Line 1' : 'Line 2'})",
-                        value: liveCurrent,
-                        icon: Icons.flash_on_rounded,
-                        iconColor:  AppColors.accentSoft,
-                        gradient: LinearGradient(
+                  _InfoCard(
+                    title:
+                        "Live Total Current (${activeLine == 'line1' ? 'Line 1' : 'Line 2'})",
+                    value: liveCurrent,
+                    icon: Icons.flash_on_rounded,
+                    iconColor: AppColors.accentSoft,
+                    gradient: LinearGradient(
                       colors: [
-                   AppColors.accentSoft.withValues(alpha: 0.7),
-                      AppColors.accentSoft.withValues(alpha: 0.3),
-                    ],
-                          begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
+                        AppColors.accentSoft.withValues(alpha: 0.7),
+                        AppColors.accentSoft.withValues(alpha: 0.3),
+                      ],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
                     ),
-                        
-                      ),
-                      const SizedBox(height: 16),
-                      _InputCard(
-                        gradient: AppColors.pastelSkyLavender,
-                        title: "Total Number of Aerators",
-                        controller: aeratorsController,
-                        onTap: setAeratorBaseline,
-                        
-                      ),
-                      const SizedBox(height: 16),
-                      _StatusGrid(
-                        currentPerAerator: currentPerAerator,
-                        aeratorsWorking: workingAerators,
-                      ),
-                     _PhaseSummaryCard(
-  rValue: "${r.toStringAsFixed(2)} A",
-  yValue: "${y.toStringAsFixed(2)} A",
-  bValue: "${b.toStringAsFixed(2)} A",
-),
+                  ),
+                  const SizedBox(height: 16),
+                  _InputCard(
+                    gradient: AppColors.pastelSkyLavender,
+                    title: "Total Number of Aerators",
+                    controller: aeratorsController,
+                    onTap: setAeratorBaseline,
+                  ),
+                  const SizedBox(height: 16),
+                  _StatusGrid(
+                    currentPerAerator: currentPerAerator,
+                    aeratorsWorking: workingAerators,
+                  ),
+                  _PhaseSummaryCard(
+                    rValue: "${r.toStringAsFixed(2)} A",
+                    yValue: "${y.toStringAsFixed(2)} A",
+                    bValue: "${b.toStringAsFixed(2)} A",
+                  ),
 
-
-
-
-                      // I edited this code 
-                      
-
-                    ],
-                  );
-              },
-            ),
+                  // I edited this code
+                ],
+              );
+            },
           ),
         ),
-      );
+      ),
+    );
+  }
+
+  // Dropdown builder
+  Widget _buildLineSelector(String? activeLine) {
+    if (activeLine == null) {
+      return const SizedBox(height: 50);
     }
 
-    // Dropdown builder
-    Widget _buildLineSelector(String? activeLine) {
-      if (activeLine == null) {
-        return const SizedBox(height: 50);
-      }
-
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-        decoration: BoxDecoration(
-          color: AppColors.cardBackground,
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: const Color.fromARGB(255, 230, 227, 227),
-              blurRadius: 25,
-              offset: const Offset(0, 8),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.cardBackground,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: const Color.fromARGB(255, 230, 227, 227),
+            blurRadius: 25,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.accentSoft.withValues(alpha: 0.6),
             ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Container(
-    padding: const EdgeInsets.all(8),
-    decoration:  BoxDecoration(
-      shape: BoxShape.circle,
-      color:  AppColors.accentSoft.withValues(alpha: 0.6),
-    ),
-    child: const Icon(
-      Icons.electrical_services_rounded,
-      color: AppColors.cardBackground,
-      size: 22,
-    ),
-  ),
+            child: const Icon(
+              Icons.electrical_services_rounded,
+              color: AppColors.cardBackground,
+              size: 22,
+            ),
+          ),
 
-            const SizedBox(width: 16),
-            const Expanded(
-              child: Text(
-                'Monitor Current From',
-                style: TextStyle(fontSize: 16, color: AppColors.subtextColor, fontWeight: FontWeight.w600),
+          const SizedBox(width: 16),
+          const Expanded(
+            child: Text(
+              'Monitor Current From',
+              style: TextStyle(
+                fontSize: 16,
+                color: AppColors.subtextColor,
+                fontWeight: FontWeight.w600,
               ),
             ),
-            DropdownButton<String>(
-              value: activeLine,
-              onChanged: _onLineSelected,
-              icon:  Icon(Icons.arrow_drop_down_rounded, color:  AppColors.accentSoft.withValues(alpha: 0.6),),
-              underline: const SizedBox(),
-              items: const [
-                DropdownMenuItem(
-                  value: 'line1',
-                  child: Text('Line 1', style: TextStyle(fontWeight: FontWeight.bold)),
-                ),
-                DropdownMenuItem(
-                  value: 'line2',
-                  child: Text('Line 2', style: TextStyle(fontWeight: FontWeight.bold)),
-                ),
-              ],
-            ),
-          ],
-        ),
-      );
-    }
-
-    Widget _buildHeader() {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Pond Monitoring System',
-            style: TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.w900,
-            color:  Color.fromARGB(255, 0, 0, 0),
-            ),
           ),
-          const SizedBox(height: 4),
-          const Text(
-            'Real-time Aerator Status',
-            style: TextStyle(fontSize: 16, color: AppColors.subtextColor, fontWeight: FontWeight.w500),
+          DropdownButton<String>(
+            value: activeLine,
+            onChanged: _onLineSelected,
+            icon: Icon(
+              Icons.arrow_drop_down_rounded,
+              color: AppColors.accentSoft.withValues(alpha: 0.6),
+            ),
+            underline: const SizedBox(),
+            items: const [
+              DropdownMenuItem(
+                value: 'line1',
+                child: Text(
+                  'Line 1',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+              DropdownMenuItem(
+                value: 'line2',
+                child: Text(
+                  'Line 2',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 16),
         ],
-      );
-    }
+      ),
+    );
   }
+
+  Widget _buildHeader() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Pond Monitoring System',
+          style: TextStyle(
+            fontSize: 28,
+            fontWeight: FontWeight.w900,
+            color: Color.fromARGB(255, 0, 0, 0),
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Real-time Aerator Status',
+          style: TextStyle(
+            fontSize: 16,
+            color: AppColors.subtextColor,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+}
+
 class _PhaseSummaryCard extends StatelessWidget {
   final String rValue;
   final String yValue;
@@ -369,11 +494,13 @@ class _PhaseSummaryCard extends StatelessWidget {
   Widget _phaseItem(String label, String value) {
     return Column(
       children: [
-        Text(label,
-            style: const TextStyle(
-              fontWeight: FontWeight.w700,
-              color: AppColors.subtextColor,
-            )),
+        Text(
+          label,
+          style: const TextStyle(
+            fontWeight: FontWeight.w700,
+            color: AppColors.subtextColor,
+          ),
+        ),
         const SizedBox(height: 8),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
@@ -383,10 +510,7 @@ class _PhaseSummaryCard extends StatelessWidget {
           ),
           child: Text(
             value,
-            style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
-            ),
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
           ),
         ),
       ],
@@ -394,364 +518,350 @@ class _PhaseSummaryCard extends StatelessWidget {
   }
 }
 
+// --- Your Custom UI Widgets (Unchanged) ---
 
-  // --- Your Custom UI Widgets (Unchanged) ---
+class _InfoCard extends StatelessWidget {
+  final String title;
+  final String value;
+  final IconData icon;
+  final Color iconColor;
+  final Gradient gradient;
 
-  class _InfoCard extends StatelessWidget {
-    final String title;
-    final String value;
-    final IconData icon;
-    final Color iconColor;
-    final Gradient gradient;
+  const _InfoCard({
+    required this.title,
+    required this.value,
+    required this.icon,
+    required this.iconColor,
+    this.gradient = AppColors.titleGradient,
+  });
 
-    const _InfoCard({
-      required this.title,
-      required this.value,
-      required this.icon,
-      required this.iconColor,
-      this.gradient = AppColors.titleGradient,
-    });
-
-    @override
-    Widget build(BuildContext context) {
-      return Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: AppColors.cardBackground,
-          gradient: gradient,
-          borderRadius: BorderRadius.circular(20),
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppColors.cardBackground,
+        gradient: gradient,
+        borderRadius: BorderRadius.circular(20),
         boxShadow: [
-            BoxShadow(
-              color: const Color.fromARGB(255, 230, 227, 227),
-              blurRadius: 25,
-              offset: const Offset(0, 8),
+          BoxShadow(
+            color: const Color.fromARGB(255, 230, 227, 227),
+            blurRadius: 25,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          // ========= CIRCLE ICON (Updated) =========
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white,
             ),
-          ],
-        ),
-        child: Row(
-          children: [
+            child: Icon(icon, size: 26, color: iconColor),
+          ),
 
-            // ========= CIRCLE ICON (Updated) =========
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: const BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.white,
+          // =========================================
+          const SizedBox(width: 16),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 16,
+                  color: AppColors.subtextColor,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-              child: Icon(
-                icon,
-                size: 26,
-                color: iconColor,
+              const SizedBox(height: 4),
+              Text(
+                value,
+                style: const TextStyle(
+                  fontSize: 26,
+                  color: AppColors.titleColor,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
-            ),
-            // =========================================
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
 
-            const SizedBox(width: 16),
-            Column(
+class _InputCard extends StatefulWidget {
+  final String title;
+  final TextEditingController controller;
+  final VoidCallback onTap;
+  final Gradient gradient;
+
+  const _InputCard({
+    required this.title,
+    required this.controller,
+    required this.onTap,
+    this.gradient = AppColors.titleGradient,
+  });
+
+  @override
+  State<_InputCard> createState() => _InputCardState();
+}
+
+class _InputCardState extends State<_InputCard> {
+  bool _isLocked = true; // default: locked
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppColors.cardBackground,
+        borderRadius: BorderRadius.circular(20),
+
+        boxShadow: [
+          BoxShadow(
+            color: const Color.fromARGB(255, 230, 227, 227),
+            blurRadius: 25,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  title,
+                  widget.title,
                   style: const TextStyle(
-                    fontSize: 16,
+                    fontSize: 14,
                     color: AppColors.subtextColor,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  value,
+                const SizedBox(height: 9),
+                TextField(
+                  controller: widget.controller,
+
+                  readOnly: _isLocked, // 🔒 control lock/unlock
+                  keyboardType: TextInputType.number,
                   style: const TextStyle(
-                    fontSize: 26,
+                    fontSize: 22,
                     color: AppColors.titleColor,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  decoration: InputDecoration(
+                    border: OutlineInputBorder(
+                      gapPadding: 3,
+                      borderSide: const BorderSide(style: BorderStyle.solid),
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.all(9),
+                    hintText: 'e.g., 10',
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _isLocked ? Icons.lock : Icons.lock_open,
+                        color: _isLocked ? Colors.black : AppColors.grey,
+                      ),
+                      onPressed: () {
+                        setState(() {
+                          _isLocked = !_isLocked;
+                        });
+                      },
+                    ),
                   ),
                 ),
               ],
             ),
-          ],
-        ),
-      );
-    }
+          ),
+          const SizedBox(width: 16),
+          _GradientButton(text: "Fix", onTap: widget.onTap),
+        ],
+      ),
+    );
   }
+}
 
-  class _InputCard extends StatefulWidget {
-    final String title;
-    final TextEditingController controller;
-    final VoidCallback onTap;
-    final Gradient gradient;
+class _StatusGrid extends StatelessWidget {
+  final String currentPerAerator;
+  final String aeratorsWorking;
 
-    const _InputCard({
-      required this.title,
-      required this.controller,
-      required this.onTap,
-      this.gradient = AppColors.titleGradient,
-    });
+  const _StatusGrid({
+    required this.currentPerAerator,
+    required this.aeratorsWorking,
+  });
 
-    @override
-    State<_InputCard> createState() => _InputCardState();
-  }
-
-  class _InputCardState extends State<_InputCard> {
-    bool _isLocked = true; // default: locked
-
-    @override
-    Widget build(BuildContext context) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        decoration: BoxDecoration(
-          color: AppColors.cardBackground,
-          borderRadius: BorderRadius.circular(20),
-          
-        boxShadow: [
-            BoxShadow(
-              color: const Color.fromARGB(255, 230, 227, 227),
-              blurRadius: 25,
-              offset: const Offset(0, 8),
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: _StatusCard(
+            title: "Fixed Current",
+            subtitle: "per Aerator",
+            value: currentPerAerator,
+            gradient: LinearGradient(
+              colors: [
+                AppColors.card,
+                AppColors.accentSoft.withValues(alpha: 0.2),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
             ),
-          ],
+            icon: Icons.settings_input_component_rounded,
+            iconColor: AppColors.primaryColor,
+          ),
         ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
+        const SizedBox(width: 16),
+        Expanded(
+          child: _StatusCard(
+            title: "Aerators",
+            subtitle: "Working",
+            value: aeratorsWorking,
+            icon: Icons.power_rounded,
+            gradient: LinearGradient(
+              colors: [
+                AppColors.card,
+                AppColors.accentSoft.withValues(alpha: 0.2),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            iconColor: AppColors.primaryColor,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _StatusCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final String value;
+  final IconData icon;
+  final Gradient gradient;
+  final Color iconColor;
+
+  const _StatusCard({
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.icon,
+    this.gradient = AppColors.softGreenTeal,
+    required this.iconColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardBackground,
+        gradient: gradient,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: const Color.fromARGB(255, 230, 227, 227),
+            blurRadius: 25,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    widget.title,
+                    title,
                     style: const TextStyle(
                       fontSize: 14,
                       color: AppColors.subtextColor,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  const SizedBox(height: 9),
-                  TextField(
-                    controller: widget.controller,
-                    
-                    readOnly: _isLocked, // 🔒 control lock/unlock
-                    keyboardType: TextInputType.number,
+                  Text(
+                    subtitle,
                     style: const TextStyle(
-                      fontSize: 22,
-                      color: AppColors.titleColor,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    decoration: InputDecoration(
-                      border: OutlineInputBorder(
-                        gapPadding: 3,
-                        borderSide: const BorderSide(style: BorderStyle.solid),
-                        borderRadius: BorderRadius.circular(30),
-                      ),
-                      isDense: true,
-                      contentPadding: const EdgeInsets.all(9),
-                      hintText: 'e.g., 10',
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _isLocked ? Icons.lock : Icons.lock_open,
-                          color: _isLocked ? Colors.black : AppColors.grey,
-                        ),
-                        onPressed: () {
-                          setState(() {
-                            _isLocked = !_isLocked;
-                          });
-                        },
-                      ),
+                      fontSize: 14,
+                      color: AppColors.subtextColor,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ],
               ),
-            ),
-            const SizedBox(width: 16),
-            _GradientButton(
-              text: "Fix", onTap: widget.onTap
+
+              // =========  CIRCLE ICON (Updated) =========
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.white,
+                ),
+                child: Icon(icon, color: iconColor, size: 24),
               ),
-          ],
-        ),
-      );
-    }
-  }
 
-  class _StatusGrid extends StatelessWidget {
-    final String currentPerAerator;
-    final String aeratorsWorking;
-
-    const _StatusGrid({
-      required this.currentPerAerator,
-      required this.aeratorsWorking,
-    });
-
-    @override
-    Widget build(BuildContext context) {
-      return Row(
-        children: [
-          Expanded(
-            child: _StatusCard(
-              title: "Fixed Current",
-              subtitle: "per Aerator",
-              value: currentPerAerator,
-              gradient: LinearGradient(
-            colors: [
-              AppColors.card,
-              AppColors.accentSoft.withValues(alpha: 0.2),
+              // ==========================================
             ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
           ),
-              icon: Icons.settings_input_component_rounded,
-              iconColor: AppColors.primaryColor,
-            ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: _StatusCard(
-              title: "Aerators",
-              subtitle: "Working",
-              value: aeratorsWorking,
-              icon: Icons.power_rounded,
-              gradient: LinearGradient(
-            colors: [
-              AppColors.card,
-              AppColors.accentSoft.withValues(alpha: 0.2),
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-              iconColor: AppColors.primaryColor,
+
+          const SizedBox(height: 12),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 24,
+              color: AppColors.titleColor,
+              fontWeight: FontWeight.w800,
             ),
           ),
         ],
-      );
-    }
+      ),
+    );
   }
+}
 
-  class _StatusCard extends StatelessWidget {
-    final String title;
-    final String subtitle;
-    final String value;
-    final IconData icon;
-    final Gradient gradient;
-    final Color iconColor;
+class _GradientButton extends StatelessWidget {
+  final String text;
+  final VoidCallback onTap;
 
-    const _StatusCard({
-      required this.title,
-      required this.subtitle,
-      required this.value,
-      required this.icon,
-      this.gradient = AppColors.softGreenTeal,
-      required this.iconColor,
-    });
+  const _GradientButton({required this.text, required this.onTap});
 
-    @override
-    Widget build(BuildContext context) {
-      return Container(
-        padding: const EdgeInsets.all(16),
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
         decoration: BoxDecoration(
-          color: AppColors.cardBackground,
-          gradient: gradient,
-          borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-            BoxShadow(
-              color: const Color.fromARGB(255, 230, 227, 227),
-              blurRadius: 25,
-              offset: const Offset(0, 8),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: AppColors.subtextColor,
-                          fontWeight: FontWeight.w600,
-                        )),
-                    Text(subtitle,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: AppColors.subtextColor,
-                          fontWeight: FontWeight.w600,
-                        )),
-                  ],
-                ),
-
-                // =========  CIRCLE ICON (Updated) =========
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.white,
-                  ),
-                  child: Icon(
-                    icon,
-                    color: iconColor,
-                    size: 24,
-                  ),
-                ),
-                // ==========================================
-
-              ],
-            ),
-
-            const SizedBox(height: 12),
-            Text(
-              value,
-              style: const TextStyle(
-                fontSize: 24,
-                color: AppColors.titleColor,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-  }
-
-
-  class _GradientButton extends StatelessWidget {
-    final String text;
-    final VoidCallback onTap;
-
-    const _GradientButton({
-      required this.text,
-      required this.onTap,
-    });
-
-    @override
-    Widget build(BuildContext context) {
-      return GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-          decoration: BoxDecoration(
-            gradient:  LinearGradient(
+          gradient: LinearGradient(
             colors: [
-                  AppColors.accentSoft.withValues(alpha: 0.7),
-                      AppColors.accentSoft.withValues(alpha: 0.3),
-                    ],
+              AppColors.accentSoft.withValues(alpha: 0.7),
+              AppColors.accentSoft.withValues(alpha: 0.3),
+            ],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
-            borderRadius: BorderRadius.circular(15),
-        
-          ),
-          child: Text(
-            text,
-            style: const TextStyle(
-              color: Color.fromARGB(255, 255, 255, 255),
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-            ),
+          borderRadius: BorderRadius.circular(15),
+        ),
+        child: Text(
+          text,
+          style: const TextStyle(
+            color: Color.fromARGB(255, 255, 255, 255),
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
           ),
         ),
-      );
-    }
+      ),
+    );
   }
+}

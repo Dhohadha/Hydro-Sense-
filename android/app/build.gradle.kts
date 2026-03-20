@@ -25,13 +25,7 @@ android {
 
      signingConfigs {
         create("release") {
-            storeFile = file("D:/flutterr/pond-monitoring-system-new-dev/satya_release.jks")
-            storePassword = "Satya123456"
-            keyAlias = "my-key-alias"
-            keyPassword = "Satya123456"
-        }
-        getByName("debug") {
-            storeFile = file("D:/flutterr/pond-monitoring-system-new-dev/satya_release.jks")
+            storeFile = file("satya_release.jks")
             storePassword = "Satya123456"
             keyAlias = "my-key-alias"
             keyPassword = "Satya123456"
