@@ -26,13 +26,9 @@ class BottomNavBar extends StatelessWidget {
 
         // Notification item with badge
         BottomNavigationBarItem(
-          icon: NotificationBadge(
-            onTap: () {
-              // This won't be triggered as the bottom nav bar handles the tap
-              // The parent widget will handle it via onTap callback
-            },
+          icon: const NotificationBadge(
             size: 16.0,
-            child: const Icon(Icons.notifications),
+            child: Icon(Icons.notifications),
           ),
           label: 'Alerts',
         ),

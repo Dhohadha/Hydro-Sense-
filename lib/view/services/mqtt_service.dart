@@ -12,10 +12,8 @@ class MqttService {
   void Function(Map<String, dynamic> data)? onDataReceived;
 
   Future<void> connect() async {
-    _client = MqttServerClient(
-      'broker.emqx.io',
-      'flutter_gf1_${DateTime.now().millisecondsSinceEpoch}',
-    );
+    final clientId = 'flutter_gf1_${DateTime.now().millisecondsSinceEpoch}';
+    _client = MqttServerClient('broker.emqx.io', clientId);
 
     _client.port = 1883;
     _client.keepAlivePeriod = 20;
@@ -32,9 +30,7 @@ class MqttService {
     };
 
     final connMessage = MqttConnectMessage()
-        .withClientIdentifier(
-          'flutter_gf1_${DateTime.now().millisecondsSinceEpoch}',
-        )
+        .withClientIdentifier(clientId)
         .startClean()
         .withWillQos(MqttQos.atMostOnce);
 
@@ -48,17 +44,16 @@ class MqttService {
       return;
     }
 
-    if (_client.connectionStatus!.state ==
-        MqttConnectionState.connected) {
+    if (_client.connectionStatus!.state == MqttConnectionState.connected) {
       _client.subscribe('PMS/data', MqttQos.atMostOnce);
 
       _client.updates!.listen(
         (List<MqttReceivedMessage<MqttMessage>> messages) {
-          final recMess =
-              messages[0].payload as MqttPublishMessage;
+          if (messages.isEmpty) return;
 
-          final payload =
-              MqttPublishPayload.bytesToStringAsString(
+          final recMess = messages[0].payload as MqttPublishMessage;
+
+          final payload = MqttPublishPayload.bytesToStringAsString(
             recMess.payload.message,
           );
 
@@ -70,7 +65,7 @@ class MqttService {
               onDataReceived!(decoded);
             }
           } catch (e) {
-            debugPrint('❗ Invalid JSON from MQTT');
+            debugPrint('❗ Invalid JSON from MQTT: $e');
           }
         },
       );

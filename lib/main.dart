@@ -66,9 +66,13 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
     // Start the native alarm service so alarm rings even when app is killed.
     try {
-      await initBackgroundAlarm();
-      await _copyAlarmFileForBackground();
-      await triggerBackgroundAlarm();
+      final bool alertSoundEnabled =
+          prefs.getBool('alert_sound_enabled') ?? true;
+      if (alertSoundEnabled) {
+        await initBackgroundAlarm();
+        await _copyAlarmFileForBackground();
+        await triggerBackgroundAlarm();
+      }
     } catch (e) {
       await prefs.setString('fcm_background_log', 'Alarm trigger error: $e');
     }
@@ -87,14 +91,23 @@ void main() async {
   debugPrint('Background alarm service initialized: $alarmInitialized');
   await _copyAlarmFileForBackground();
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-  runApp(
-    MaterialApp(
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
       debugShowCheckedModeBanner: false,
       navigatorKey: navigatorKey,
-      home: SplashScreen(),
-      routes: {'/notifications': (context) => NotificationsScreen()},
-    ),
-  );
+      home: const SplashScreen(),
+      routes: {
+        '/notifications': (context) => const NotificationsScreen(),
+      },
+    );
+  }
 }
 
 class SplashScreen extends StatefulWidget {

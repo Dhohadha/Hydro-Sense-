@@ -68,8 +68,14 @@ class NotificationServices {
       if (!shouldTrigger) return;
 
       try {
-        await initBackgroundAlarm();
-        await triggerBackgroundAlarm();
+        final prefs = await SharedPreferences.getInstance();
+        final bool alertSoundEnabled =
+            prefs.getBool('alert_sound_enabled') ?? true;
+
+        if (alertSoundEnabled) {
+          await initBackgroundAlarm();
+          await triggerBackgroundAlarm();
+        }
         _showForegroundAlert(message);
       } catch (e) {
         debugPrint('Failed to trigger alarm in foreground: $e');

@@ -7,6 +7,8 @@ import 'package:gf1/view-model/auth/phone_login_screen.dart';
 import 'package:gf1/view-model/permission_code_screen.dart';
 import 'package:gf1/view/utils/color_constants.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 
 class AccountScreen extends StatefulWidget {
   const AccountScreen({super.key});
@@ -16,6 +18,32 @@ class AccountScreen extends StatefulWidget {
 }
 
 class _AccountScreenState extends State<AccountScreen> {
+  bool _alertSoundEnabled = true;
+  late Future<UserModel?> _userDataFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+    _userDataFuture = _fetchUserData();
+  }
+
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _alertSoundEnabled = prefs.getBool('alert_sound_enabled') ?? true;
+    });
+  }
+
+  Future<void> _toggleAlertSound(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('alert_sound_enabled', value);
+    setState(() {
+      _alertSoundEnabled = value;
+    });
+  }
+
+
   Future<UserModel?> _fetchUserData() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return null;
@@ -132,7 +160,7 @@ class _AccountScreenState extends State<AccountScreen> {
 
               // SizedBox(height: 20,),
               FutureBuilder<UserModel?>(
-                future: _fetchUserData(),
+                future: _userDataFuture,
                 builder: (context, snapshot) {
                   if (snapshot.connectionState == ConnectionState.waiting) {
                     return Center(
@@ -367,6 +395,23 @@ class _AccountScreenState extends State<AccountScreen> {
           icon: Icons.notifications_outlined,
           title: 'Notification Settings',
           onTap: () {},
+        ),
+
+        const Divider(height: 1, indent: 16, endIndent: 16),
+
+        // 🔊 Alert Sound Toggle
+        SwitchListTile(
+          secondary: const Icon(Icons.volume_up_outlined, color: Colors.blue),
+          title: const Text(
+            'Alert Sound',
+            style: TextStyle(fontWeight: FontWeight.w500),
+          ),
+          subtitle: const Text('Play loud sound for alerts'),
+          value: _alertSoundEnabled,
+          activeThumbColor: Colors.blue,
+          onChanged: (bool value) {
+            _toggleAlertSound(value);
+          },
         ),
       ],
     ),
