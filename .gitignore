@@ -56,3 +56,7 @@ secrets/
 !GoogleService-Info.plist
 !manifest.json
 !firebase.json
+
+# Android Keystore and Properties
+*.jks
+key.properties

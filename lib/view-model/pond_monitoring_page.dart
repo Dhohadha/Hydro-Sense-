@@ -8,7 +8,6 @@ import 'package:mqtt_client/mqtt_server_client.dart';
 
 import 'package:gf1/view/services/monitoring_service.dart';
 import 'package:gf1/view/services/api_service.dart';
-import 'package:gf1/view/services/notification_services.dart';
 import 'package:gf1/view/utils/color_constants.dart';
 // import '../utils/color_constants.dart';
 
@@ -25,8 +24,7 @@ class _PondMonitoringPageState extends State<PondMonitoringPage> {
   // MQTT connection for phase currents
   late MqttServerClient _mqttClient;
   double _l1 = 0.0, _l2 = 0.0, _l3 = 0.0;
-  final Set<String> _notifiedPhases =
-      {}; // Track which phases already triggered a notification
+
 
   // Dropdown selection (persisted in Firestore)
   String? _selectedLine;
@@ -59,7 +57,7 @@ class _PondMonitoringPageState extends State<PondMonitoringPage> {
 
     _mqttClient.onConnected = () {
       debugPrint('✅ MQTT Connected (Pond Monitoring Page)');
-      _mqttClient.subscribe('PMS1/data', MqttQos.atMostOnce);
+      _mqttClient.subscribe('PMS/data', MqttQos.atMostOnce);
     };
 
     _mqttClient.onDisconnected = () {
@@ -99,49 +97,10 @@ class _PondMonitoringPageState extends State<PondMonitoringPage> {
           _l2 = (data['l2'] ?? _l2).toDouble();
           _l3 = (data['l3'] ?? _l3).toDouble();
         });
-        _checkPhaseNotifications();
       } catch (e) {
         debugPrint('❗ Invalid MQTT JSON in Pond Monitoring Page: $e');
       }
     });
-  }
-
-  /// Check phase values and send notifications if needed.
-  /// Rule: If ALL three are < 0.03, device is off → no notification.
-  /// Otherwise, notify for each individual phase < 0.03.
-  Future<void> _checkPhaseNotifications() async {
-    // If all three are below threshold, device is likely off → skip
-    if (_l1 < 0.03 && _l2 < 0.03 && _l3 < 0.03) {
-      _notifiedPhases.clear(); // reset since device is off
-      return;
-    }
-
-    final notificationService = NotificationServices();
-    final deviceToken = await NotificationServices.getDeviceToken();
-    if (deviceToken == null) return;
-
-    final phaseValues = {'R Phase': _l1, 'Y Phase': _l2, 'B Phase': _l3};
-
-    for (var entry in phaseValues.entries) {
-      final phaseName = entry.key;
-      final phaseValue = entry.value;
-
-      if (phaseValue < 0.03) {
-        if (!_notifiedPhases.contains(phaseName)) {
-          await notificationService.sendPushNotification(
-            deviceToken: deviceToken,
-            title: "Phase Current Alert ⚡",
-            body:
-                "$phaseName current is very low: ${phaseValue.toStringAsFixed(3)} A",
-          );
-          _notifiedPhases.add(phaseName);
-          debugPrint('🔔 Notification sent for $phaseName: $phaseValue A');
-        }
-      } else {
-        // Value recovered → allow re-notification if it drops again
-        _notifiedPhases.remove(phaseName);
-      }
-    }
   }
 
   Future<void> _loadInitialFromFirestore() async {

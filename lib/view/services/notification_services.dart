@@ -1,13 +1,9 @@
-import 'dart:convert';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart'; // Import for AlertDialog
 import 'package:flutter/services.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:gf1/view-model/background_alarm.dart';
 import 'package:gf1/model/notification_model.dart';
 import 'package:gf1/view/services/local_notification_service.dart';
-import 'package:googleapis_auth/auth_io.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -208,19 +204,19 @@ class NotificationServices {
   }
 
   // --- SECURITY WARNING REMAINS ---
-  Future<AccessCredentials> _getAccessToken() async {
-    final serviceAccountPath = dotenv.env['PATH_TO_SECRET'];
-    // SECURITY NOTE: Consider moving this off-device in production.
-    String serviceAccountJson = await rootBundle.loadString(
-      serviceAccountPath!,
-    );
-    final serviceAccount = ServiceAccountCredentials.fromJson(
-      serviceAccountJson,
-    );
-    final scopes = ['https://www.googleapis.com/auth/firebase.messaging'];
-    final client = await clientViaServiceAccount(serviceAccount, scopes);
-    return client.credentials;
-  }
+  // Future<AccessCredentials> _getAccessToken() async {
+  //   final serviceAccountPath = dotenv.env['PATH_TO_SECRET'];
+  //   // SECURITY NOTE: Consider moving this off-device in production.
+  //   String serviceAccountJson = await rootBundle.loadString(
+  //     serviceAccountPath!,
+  //   );
+  //   final serviceAccount = ServiceAccountCredentials.fromJson(
+  //     serviceAccountJson,
+  //   );
+  //   final scopes = ['https://www.googleapis.com/auth/firebase.messaging'];
+  //   final client = await clientViaServiceAccount(serviceAccount, scopes);
+  //   return client.credentials;
+  // }
 
   Future<bool> sendPushNotification({
     required String deviceToken,
@@ -228,49 +224,13 @@ class NotificationServices {
     required String body,
     Map<String, dynamic>? data,
   }) async {
-    if (deviceToken.isEmpty) return false;
-
-    try {
-      final credentials = await _getAccessToken();
-      final accessToken = credentials.accessToken.data;
-      final projectId = dotenv.env['PROJECT_ID'];
-      final url = Uri.parse(
-        'https://fcm.googleapis.com/v1/projects/$projectId/messages:send',
-      );
-      final message = {
-        'message': {
-          'token': deviceToken,
-          'notification': {'title': title, 'body': body},
-          'data': data ?? {},
-          'android': {
-            'priority': 'high',
-            'notification': {'notification_count': 1},
-          },
-        },
-      };
-      final response = await http.post(
-        url,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $accessToken',
-        },
-        body: jsonEncode(message),
-      );
-
-      if (response.statusCode == 200) {
-        debugPrint('✅ Notification sent successfully.');
-        return true;
-      } else {
-        debugPrint(
-          '❌ Failed to send notification: ${response.statusCode} ${response.body}',
-        );
-        return false;
-      }
-    } catch (e) {
-      debugPrint('Error sending push notification: $e');
-      return false;
-    }
+    debugPrint(
+      '🔒 SECURITY: Client-side push notifications are disabled for production. '
+      'Please implement this logic on a secure backend (e.g., Firebase Cloud Functions).'
+    );
+    return false; // Disabled intentionally
   }
+
 }
 
 // NOTE: For Android FCM custom sound to play from the system notification,

@@ -1,3 +1,6 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -5,6 +8,13 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
     id("com.google.gms.google-services")
 }
+
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+
 
 android {
     namespace = "com.yubhiantech.pondmonitoring"
@@ -25,10 +35,14 @@ android {
 
      signingConfigs {
         create("release") {
-            storeFile = file("satya_release.jks")
-            storePassword = "Satya123456"
-            keyAlias = "my-key-alias"
-            keyPassword = "Satya123456"
+            storeFile = if (keystorePropertiesFile.exists()) {
+                rootProject.file(keystoreProperties["storeFile"] as String)
+            } else {
+                file("satya_release.jks") // fallback for currently hardcoded
+            }
+            storePassword = if (keystorePropertiesFile.exists()) keystoreProperties["storePassword"] as String else "Satya123456"
+            keyAlias = if (keystorePropertiesFile.exists()) keystoreProperties["keyAlias"] as String else "my-key-alias"
+            keyPassword = if (keystorePropertiesFile.exists()) keystoreProperties["keyPassword"] as String else "Satya123456"
         }
     }
     defaultConfig {
