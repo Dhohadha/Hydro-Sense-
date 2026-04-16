@@ -42,10 +42,32 @@ class _AlarmScreenState extends State<AlarmScreen>
       final bool isFromNotification = args['isFromNotification'] == true;
       if (isFromNotification && !_dialogShown) {
         _dialogShown = true;
+        debugPrint('🔔 Triggering Stop Alarm dialog from notification arguments');
         WidgetsBinding.instance.addPostFrameCallback((_) {
           _showStopAlarmDialog();
         });
       }
+    }
+    
+    // Fallback: Check global alarm flag
+    _checkAlarmFlag();
+  }
+
+  Future<void> _checkAlarmFlag() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final bool isPlaying = prefs.getBool('alarm_playing') ?? false;
+      if (isPlaying && !_dialogShown) {
+        _dialogShown = true;
+        debugPrint('🔔 Triggering Stop Alarm dialog from SharedPreferences flag (active alarm)');
+        if (mounted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _showStopAlarmDialog();
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error checking alarm flag: $e');
     }
   }
 

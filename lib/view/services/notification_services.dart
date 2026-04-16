@@ -109,17 +109,48 @@ void _onNotificationActionBackground(NotificationResponse response) async {
 }
 
 void _onNotificationAction(NotificationResponse response) async {
+  debugPrint('🔔 Local Notification Action received: ID=${response.id}, ActionID=${response.actionId}, Payload=${response.payload}');
+  
   if (response.actionId == 'stop_alarm') {
+    debugPrint('🛑 "Stop Alarm" action button pressed from foreground notification');
     try {
       const platform = MethodChannel('com.yubhiantech.pondmonitoring/alarm');
       await platform.invokeMethod('stopAlarm');
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('Error stopping native alarm: $e');
+    }
     try {
       await stopBackgroundAlarm();
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('Error stopping background alarm: $e');
+    }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('alarm_playing', false);
     await cancelAlarmNotification();
+  } else if (response.payload == 'alarm') {
+    debugPrint('📲 Notification body tapped. Redirecting to Alarm Screen...');
+    // Handle redirecting to alarm page when the notification body itself is tapped
+    final Map<String, dynamic> arguments = {
+      'title': 'Aerator Alert', // Fallback title
+      'body': 'Tap to stop alarm.', // Fallback body
+      'isFromNotification': true,
+    };
+    
+    // Use the global navigator key to push the route
+    Future.microtask(() async {
+      int retryCount = 0;
+      while (navigatorKey.currentState == null && retryCount < 10) {
+        await Future.delayed(const Duration(milliseconds: 200));
+        retryCount++;
+      }
+
+      if (navigatorKey.currentState != null) {
+        debugPrint('🚀 Navigating to /alarm from local notification tap');
+        navigatorKey.currentState?.pushNamed('/alarm', arguments: arguments);
+      } else {
+        debugPrint('❌ ERROR: Navigator state still null after retries');
+      }
+    });
   }
 }
 
@@ -175,7 +206,7 @@ class NotificationServices {
     FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
       // Foreground: trigger same background alarm path (with duplicate guard and timed stop)
       debugPrint(
-        'Foreground FCM received: ${message.messageId} | ${message.notification?.title}',
+        '📥 Foreground FCM received: ID=${message.messageId} | Title=${message.notification?.title}',
       );
       // Persist to local storage so it shows in Notifications screen with time/title/body
       try {
@@ -214,7 +245,7 @@ class NotificationServices {
 
   /// Unified handler for notification clicks (Cold Start & Resume)
   void _handleNotificationClick(RemoteMessage message) async {
-    debugPrint('Handling notification click. Data: ${message.data}');
+    debugPrint('🔔 FCM Notification click handled. Data: ${message.data}');
 
     // Persist to local storage so it shows in Notifications screen
     try {

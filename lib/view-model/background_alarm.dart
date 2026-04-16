@@ -91,8 +91,11 @@ Future<bool> triggerBackgroundAlarm() async {
       allowWhileIdle: true,
     );
 
+    debugPrint('🔔 Background alarm oneShot scheduled: $success');
+    
     // Direct fallback invocation
     try {
+      debugPrint('🔔 Invoking background callback manually as fallback');
       backgroundAlarmCallback();
     } catch (e) {
       await prefs.setString(
@@ -108,6 +111,7 @@ Future<bool> triggerBackgroundAlarm() async {
 /// Stop the background alarm
 Future<bool> stopBackgroundAlarm() async {
   if (Platform.isAndroid) {
+    debugPrint('🛑 Stopping background alarm...');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_alarmPlayingKey, false);
     return await AndroidAlarmManager.cancel(alarmId);
