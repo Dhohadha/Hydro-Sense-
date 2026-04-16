@@ -1,29 +1,10 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class DeviceService {
 
   // 🔐 EXISTING METHOD (KEEP)
   static Future<String?> getDeviceId() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return null;
-
-    try {
-      final doc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .get();
-
-      if (doc.exists) {
-        return doc.data()?['deviceId'] as String?;
-      }
-    } catch (e) {
-      debugPrint('❗ Error fetching deviceId: $e');
-    }
-
-    return null;
+    return 'vishnu2';
   }
 
   // =================== NEW CODE BELOW ===================

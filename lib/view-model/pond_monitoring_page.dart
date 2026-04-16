@@ -1,13 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:mqtt_client/mqtt_client.dart';
-import 'package:mqtt_client/mqtt_server_client.dart';
-
 import 'package:gf1/view/services/monitoring_service.dart';
-import 'package:gf1/view/services/api_service.dart';
 import 'package:gf1/view/utils/color_constants.dart';
 // import '../utils/color_constants.dart';
 
@@ -21,202 +14,34 @@ class _PondMonitoringPageState extends State<PondMonitoringPage> {
   final TextEditingController aeratorsController = TextEditingController();
   final MonitoringService _monitoringService = MonitoringService();
 
-  // MQTT connection for phase currents
-  late MqttServerClient _mqttClient;
-  double _l1 = 0.0, _l2 = 0.0, _l3 = 0.0;
-
-
-  // Dropdown selection (persisted in Firestore)
-  String? _selectedLine;
-
-  final _firestore = FirebaseFirestore.instance;
-  final _auth = FirebaseAuth.instance;
-
-  DocumentReference<Map<String, dynamic>> get _userDoc {
-    final uid = _auth.currentUser?.uid;
-    return _firestore.collection('users').doc(uid);
-  }
-
   @override
   void initState() {
     super.initState();
     _monitoringService.start();
     _loadInitialFromFirestore();
-    _connectMqtt();
-  }
-
-  Future<void> _connectMqtt() async {
-    _mqttClient = MqttServerClient(
-      'broker.emqx.io', // Broker Address
-      'flutter_client_${DateTime.now().millisecondsSinceEpoch}', // Unique Client ID
-    );
-
-    _mqttClient.port = 1883;
-    _mqttClient.keepAlivePeriod = 20;
-    _mqttClient.logging(on: false);
-
-    _mqttClient.onConnected = () {
-      debugPrint('✅ MQTT Connected (Pond Monitoring Page)');
-      _mqttClient.subscribe('PMS/data', MqttQos.atMostOnce);
-    };
-
-    _mqttClient.onDisconnected = () {
-      debugPrint('❌ MQTT Disconnected (Pond Monitoring Page)');
-    };
-
-    final connMessage = MqttConnectMessage()
-        .withClientIdentifier(
-          'flutter_client_${DateTime.now().millisecondsSinceEpoch}',
-        )
-        .startClean()
-        .withWillQos(MqttQos.atMostOnce);
-    _mqttClient.connectionMessage = connMessage;
-
-    try {
-      await _mqttClient.connect();
-    } catch (e) {
-      debugPrint('MQTT connection failed: $e');
-      return;
-    }
-
-    _mqttClient.updates!.listen((
-      List<MqttReceivedMessage<MqttMessage>> events,
-    ) {
-      final recMessage = events[0].payload as MqttPublishMessage;
-      final payload = MqttPublishPayload.bytesToStringAsString(
-        recMessage.payload.message,
-      );
-
-      debugPrint('📩 MQTT Received in Pond Monitoring Page: $payload');
-
-      try {
-        final data = jsonDecode(payload);
-        if (!mounted) return;
-        setState(() {
-          _l1 = (data['l1'] ?? _l1).toDouble();
-          _l2 = (data['l2'] ?? _l2).toDouble();
-          _l3 = (data['l3'] ?? _l3).toDouble();
-        });
-      } catch (e) {
-        debugPrint('❗ Invalid MQTT JSON in Pond Monitoring Page: $e');
-      }
-    });
   }
 
   Future<void> _loadInitialFromFirestore() async {
-    final snap = await _userDoc.get();
-    final data = snap.data() ?? {};
-    final line = (data['selectedLine'] ?? 'line2').toString();
+    // Bypassing Firestore initialization
+    const int count = 11; // Hardcoded to 11 total aerators
 
-    // Prefill the count input from the active line
-    final int count = line == 'line1'
-        ? (data['noAeratorsLine1'] ?? 0)
-        : (data['noAeratorsLine2'] ?? 0);
-
+    if (!mounted) return;
     setState(() {
-      _selectedLine = line;
-      if (count > 0) {
-        aeratorsController.text = count.toString();
-      }
+      aeratorsController.text = count.toString();
     });
-
-    // Ensure doc exists
-    await _userDoc.set({'selectedLine': line}, SetOptions(merge: true));
   }
 
   Future<void> setAeratorBaseline() async {
     FocusScope.of(context).unfocus();
-    final String active = _selectedLine ?? 'line2';
-    final int totalAerators = int.tryParse(aeratorsController.text.trim()) ?? 0;
-
-    // Persist the count to Firestore
-    final Map<String, dynamic> updates = {
-      if (active == 'line1') 'noAeratorsLine1': totalAerators,
-      if (active == 'line2') 'noAeratorsLine2': totalAerators,
-    };
-
-    // Compute baseline NOW using live current (if possible)
-    double perAerator = 0.0;
-    if (totalAerators > 0) {
-      try {
-        final api = await ApiService().fetchWaterQualityData();
-        final double live = active == 'line1' ? api.line1 : api.line2;
-        if (live > 1.0) {
-          perAerator = live / totalAerators;
-        }
-      } catch (e) {
-        debugPrint('Failed to compute baseline from API: $e');
-      }
-    }
-
-    if (active == 'line1') {
-      updates['perAerator_currentLine1'] = perAerator;
-    } else {
-      updates['perAerator_currentLine2'] = perAerator;
-    }
-
-    // ✅ Save to Firestore
-    await _userDoc.set(updates, SetOptions(merge: true));
-
-    // ✅ Also PATCH to external API
-    try {
-      final snap = await _userDoc.get();
-      final data = snap.data() ?? {};
-      final success = await ApiService().patchUserUpdate(
-        noAeratorsLine1: data['noAeratorsLine1'] ?? 0,
-        noAeratorsLine2: data['noAeratorsLine2'] ?? 0,
-        perAeratorLine1: (data['perAerator_currentLine1'] ?? 0).toDouble(),
-        perAeratorLine2: (data['perAerator_currentLine2'] ?? 0).toDouble(),
-      );
-      debugPrint(
-        "The data are : ${data['noAeratorsLine1'] ?? 0}, ${data['noAeratorsLine2'] ?? 0}, ${(data['perAerator_currentLine1'] ?? 0).toDouble()}, ${(data['perAerator_currentLine2'] ?? 0).toDouble()}",
-      );
-
-      if (success) {
-        debugPrint("PATCH success ✅");
-      } else {
-        debugPrint("PATCH failed ❌");
-      }
-    } catch (e) {
-      debugPrint("Error during PATCH: $e");
-    }
-
-    // Refresh monitoring
-    await _monitoringService.refreshDataForNewLineSelection();
+    
+    // Using local calculation, so we just rebuild
+    setState(() {});
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Aerator count updated & API patched.'),
+        content: Text('Total aerators updated!'),
         backgroundColor: Colors.blueAccent,
-      ),
-    );
-  }
-
-  /// Handle dropdown changes
-  Future<void> _onLineSelected(String? newLine) async {
-    if (newLine == null || newLine == _selectedLine) return;
-
-    setState(() => _selectedLine = newLine);
-
-    await _userDoc.set({'selectedLine': newLine}, SetOptions(merge: true));
-
-    // Prefill aerators input based on newly selected line
-    final snap = await _userDoc.get();
-    final data = snap.data() ?? {};
-    final int count = newLine == 'line1'
-        ? (data['noAeratorsLine1'] ?? 0)
-        : (data['noAeratorsLine2'] ?? 0);
-    aeratorsController.text = count > 0 ? count.toString() : '';
-
-    // Fetch fresh data for new line
-    await _monitoringService.refreshDataForNewLineSelection();
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Monitoring switched to $newLine.'),
-        backgroundColor: Colors.green,
       ),
     );
   }
@@ -224,7 +49,6 @@ class _PondMonitoringPageState extends State<PondMonitoringPage> {
   @override
   void dispose() {
     aeratorsController.dispose();
-    _mqttClient.disconnect();
     super.dispose();
   }
 
@@ -249,28 +73,34 @@ class _PondMonitoringPageState extends State<PondMonitoringPage> {
                 return const Center(child: Text("Error loading data"));
               }
 
-              final liveCurrent = snapshot.data?.liveCurrentValue ?? "-- A";
-              final workingAerators =
-                  snapshot.data?.aeratorsWorkingValue ?? "-- / --";
               final currentPerAerator =
-                  snapshot.data?.currentPerAeratorValue ?? "-- A";
-              final activeLine = snapshot.data?.selectedLine ?? _selectedLine;
-              // Using values from local MQTT state as requested
-              final r = _l1;
-              final y = _l2;
-              final b = _l3;
+                  snapshot.data?.currentPerAeratorValue ?? "1.50 A";
+              
+              // Using values from the monitoring stream (API) to ensure live data is shown
+              final r = snapshot.data?.rPhase ?? 0.0;
+              final y = snapshot.data?.yPhase ?? 0.0;
+              
+              // Calculate Working Aerators locally
+              final double currentPerAeratorInAmps = 1.5;
+              final double totalLiveCurrent = snapshot.data?.yPhase ?? 0.0; // Line 2 as Total Current
+              final int totalAerators = int.tryParse(aeratorsController.text) ?? 11;
+              
+              int approximateWorking = 0;
+              if (totalLiveCurrent >= 1.0 && totalAerators > 0) {
+                 approximateWorking = (totalLiveCurrent / currentPerAeratorInAmps).round().clamp(0, totalAerators);
+              }
+
+              final liveCurrent = "${totalLiveCurrent.toStringAsFixed(2)} A";
+              final workingAerators = "$approximateWorking / $totalAerators";
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _buildHeader(),
                   const SizedBox(height: 24),
-                  _buildLineSelector(activeLine),
-                  const SizedBox(height: 16),
 
                   _InfoCard(
-                    title:
-                        "Live Total Current (${activeLine == 'line1' ? 'Line 1' : 'Line 2'})",
+                    title: "Live Total Current",
                     value: liveCurrent,
                     icon: Icons.flash_on_rounded,
                     iconColor: AppColors.accentSoft,
@@ -298,7 +128,7 @@ class _PondMonitoringPageState extends State<PondMonitoringPage> {
                   _PhaseSummaryCard(
                     rValue: "${r.toStringAsFixed(2)} A",
                     yValue: "${y.toStringAsFixed(2)} A",
-                    bValue: "${b.toStringAsFixed(2)} A",
+                    bValue: "--", // Fixed to "--" as requested
                   ),
 
                   // I edited this code
@@ -311,81 +141,7 @@ class _PondMonitoringPageState extends State<PondMonitoringPage> {
     );
   }
 
-  // Dropdown builder
-  Widget _buildLineSelector(String? activeLine) {
-    if (activeLine == null) {
-      return const SizedBox(height: 50);
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-      decoration: BoxDecoration(
-        color: AppColors.cardBackground,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: const Color.fromARGB(255, 230, 227, 227),
-            blurRadius: 25,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppColors.accentSoft.withValues(alpha: 0.6),
-            ),
-            child: const Icon(
-              Icons.electrical_services_rounded,
-              color: AppColors.cardBackground,
-              size: 22,
-            ),
-          ),
-
-          const SizedBox(width: 16),
-          const Expanded(
-            child: Text(
-              'Monitor Current From',
-              style: TextStyle(
-                fontSize: 16,
-                color: AppColors.subtextColor,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-          DropdownButton<String>(
-            value: activeLine,
-            onChanged: _onLineSelected,
-            icon: Icon(
-              Icons.arrow_drop_down_rounded,
-              color: AppColors.accentSoft.withValues(alpha: 0.6),
-            ),
-            underline: const SizedBox(),
-            items: const [
-              DropdownMenuItem(
-                value: 'line1',
-                child: Text(
-                  'Line 1',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              DropdownMenuItem(
-                value: 'line2',
-                child: Text(
-                  'Line 2',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
+  // Removed dropdown builder
   Widget _buildHeader() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -570,8 +326,6 @@ class _InputCard extends StatefulWidget {
 }
 
 class _InputCardState extends State<_InputCard> {
-  bool _isLocked = true; // default: locked
-
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -606,7 +360,7 @@ class _InputCardState extends State<_InputCard> {
                 TextField(
                   controller: widget.controller,
 
-                  readOnly: _isLocked, // 🔒 control lock/unlock
+                  readOnly: false, // User can now edit this
                   keyboardType: TextInputType.number,
                   style: const TextStyle(
                     fontSize: 22,
@@ -621,17 +375,13 @@ class _InputCardState extends State<_InputCard> {
                     ),
                     isDense: true,
                     contentPadding: const EdgeInsets.all(9),
-                    hintText: 'e.g., 10',
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _isLocked ? Icons.lock : Icons.lock_open,
-                        color: _isLocked ? Colors.black : AppColors.grey,
+                    hintText: 'e.g., 11',
+                    suffixIcon: const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: Icon(
+                        Icons.edit,
+                        color: Colors.black,
                       ),
-                      onPressed: () {
-                        setState(() {
-                          _isLocked = !_isLocked;
-                        });
-                      },
                     ),
                   ),
                 ),
@@ -639,7 +389,7 @@ class _InputCardState extends State<_InputCard> {
             ),
           ),
           const SizedBox(width: 16),
-          _GradientButton(text: "Fix", onTap: widget.onTap),
+          _GradientButton(text: "Apply", onTap: widget.onTap),
         ],
       ),
     );

@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:gf1/view/services/api_service.dart';
@@ -33,8 +31,6 @@ class MonitoringService {
   MonitoringService._internal();
 
   final ApiService _apiService = ApiService();
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseAuth _auth = FirebaseAuth.instance;
 
   Timer? _timer;
   bool _isRunning = false;
@@ -43,14 +39,9 @@ class MonitoringService {
       BehaviorSubject<MonitoringData>();
   Stream<MonitoringData> get dataStream => _dataController.stream;
 
-  /// Current user's Firestore document
-  DocumentReference<Map<String, dynamic>> _userDoc() {
-    final uid = _auth.currentUser?.uid;
-    if (uid == null) {
-      throw Exception("User not logged in");
-    }
-    return _firestore.collection('users').doc(uid);
-  }
+  // Document reference removed to avoid user dependency
+
+  String activeLine = 'line1';
 
   void start() {
     if (_isRunning) return;
@@ -65,54 +56,29 @@ class MonitoringService {
     _isRunning = false;
   }
 
-  Future<void> refreshDataForNewLineSelection() async {
+  Future<void> refreshDataForNewLineSelection(String newLine) async {
+    activeLine = newLine;
     await _fetchApiData();
   }
 
   Future<void> _fetchApiData() async {
+    debugPrint('🔍 MonitoringService: Fetching data for $activeLine...');
     try {
-      final userRef = _userDoc();
-      final snap = await userRef.get();
-      final data = snap.data() ?? {};
-
-      final String selectedLine =
-          (data['selectedLine'] ?? 'line2').toString();
-
       // 🔹 Fetch API
       final api = await _apiService.fetchWaterQualityData();
+      debugPrint('✅ MonitoringService: API fetch success');
 
-      // 🔹 Live current (line-wise)
-      final double liveCurrentInAmps =
-          selectedLine == 'line1' ? api.line1 : api.line2;
+      // 🔹 Live current (updated to use Line 2 as the primary "Total Current" as requested)
+      final double liveCurrentInAmps = api.line2;
 
-      // 🔹 MIRROR live current to R / Y / B (as requested)
-      final double rAmp = liveCurrentInAmps;
-      final double yAmp = liveCurrentInAmps;
-      final double bAmp = liveCurrentInAmps;
+      // 🔹 Map ACTUAL line data to phases
+      final double rAmp = api.line1; // Line 1 -> R
+      final double yAmp = api.line2; // Line 2 -> Y
+      final double bAmp = api.line2; // Placeholder for B
 
-      // Aerator count
-      final int totalAerators = selectedLine == 'line1'
-          ? (data['noAeratorsLine1'] ?? 0)
-          : (data['noAeratorsLine2'] ?? 0);
-
-      double currentPerAeratorInAmps = selectedLine == 'line1'
-          ? (data['perAerator_currentLine1'] ?? 0.0).toDouble()
-          : (data['perAerator_currentLine2'] ?? 0.0).toDouble();
-
-      // Auto baseline
-      if (currentPerAeratorInAmps == 0.0 &&
-          totalAerators > 0 &&
-          liveCurrentInAmps > 1.0) {
-        currentPerAeratorInAmps =
-            liveCurrentInAmps / totalAerators;
-
-        await userRef.update({
-          if (selectedLine == 'line1')
-            'perAerator_currentLine1': currentPerAeratorInAmps,
-          if (selectedLine == 'line2')
-            'perAerator_currentLine2': currentPerAeratorInAmps,
-        });
-      }
+      // Dynamic defaults for aerator counts
+      final int totalAerators = activeLine == 'line1' ? 12 : 11;
+      double currentPerAeratorInAmps = 1.5; // Estimated baseline
 
       // Approx working aerators
       int approximateWorking = 0;
@@ -134,10 +100,10 @@ class MonitoringService {
           yPhase: yAmp,
           bPhase: bAmp,
           aeratorsWorkingValue:
-              "$approximateWorking / $totalAerators",
+              "$approximateWorking / $totalAerators", // Restored dynamic ratio
           currentPerAeratorValue:
               "${currentPerAeratorInAmps.toStringAsFixed(2)} A",
-          selectedLine: selectedLine,
+          selectedLine: activeLine,
         ),
       );
     } catch (e) {

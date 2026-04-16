@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
@@ -7,6 +9,7 @@ import 'package:gf1/model/notification_model.dart';
 import 'package:gf1/view-model/auth/auth_state.dart';
 import 'package:gf1/view-model/background_alarm.dart';
 import 'package:gf1/view/screens/notifications_screen.dart';
+import 'package:gf1/view/screens/alarm_screen.dart';
 import 'package:gf1/view/services/local_notification_service.dart';
 import 'package:gf1/view/services/notification_services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -81,15 +84,50 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 }
 
 void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  await NotificationServices().initFcm();
-  await NotificationServices.ensureTokenSynced(); // early sync attempt
-  final alarmInitialized = await initBackgroundAlarm();
-  debugPrint('Background alarm service initialized: $alarmInitialized');
-  await _copyAlarmFileForBackground();
-  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-  runApp(const MyApp());
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+    
+    debugPrint('🚀 App starting initialization...');
+    
+    try {
+      await dotenv.load(fileName: ".env");
+      debugPrint('✅ Dotenv loaded');
+    } catch (e) {
+      debugPrint('❌ Dotenv load failed: $e');
+    }
+
+    try {
+      await Firebase.initializeApp();
+      debugPrint('✅ Firebase initialized');
+    } catch (e) {
+      debugPrint('❌ Firebase init failed: $e');
+    }
+
+    try {
+      await NotificationServices().initFcm();
+      await NotificationServices.ensureTokenSynced();
+      await initLocalNotifications(); // Sets up local notification + Stop button
+      debugPrint('✅ FCM initialized and synced');
+    } catch (e) {
+      debugPrint('❌ FCM init/sync failed: $e');
+    }
+
+    try {
+      final alarmInitialized = await initBackgroundAlarm();
+      debugPrint('Background alarm service initialized: $alarmInitialized');
+    } catch (e) {
+      debugPrint('❌ Alarm init failed: $e');
+    }
+
+    await _copyAlarmFileForBackground();
+    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+    
+    runApp(const MyApp());
+    debugPrint('🏁 App execution started');
+  }, (error, stackTrace) {
+    debugPrint('🚨 UNHANDLED ASYNC ERROR: $error');
+    debugPrint('📚 STACK TRACE: $stackTrace');
+  });
 }
 
 class MyApp extends StatelessWidget {
@@ -103,6 +141,7 @@ class MyApp extends StatelessWidget {
       home: const SplashScreen(),
       routes: {
         '/notifications': (context) => const NotificationsScreen(),
+        '/alarm': (context) => const AlarmScreen(),
       },
     );
   }

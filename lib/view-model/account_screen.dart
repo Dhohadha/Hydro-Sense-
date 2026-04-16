@@ -1,10 +1,5 @@
 import 'dart:async';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:gf1/model/user_model.dart';
-import 'package:gf1/view-model/auth/phone_login_screen.dart';
-import 'package:gf1/view-model/permission_code_screen.dart';
 import 'package:gf1/view/utils/color_constants.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -19,13 +14,11 @@ class AccountScreen extends StatefulWidget {
 
 class _AccountScreenState extends State<AccountScreen> {
   bool _alertSoundEnabled = true;
-  late Future<UserModel?> _userDataFuture;
 
   @override
   void initState() {
     super.initState();
     _loadSettings();
-    _userDataFuture = _fetchUserData();
   }
 
   Future<void> _loadSettings() async {
@@ -44,73 +37,7 @@ class _AccountScreenState extends State<AccountScreen> {
   }
 
 
-  Future<UserModel?> _fetchUserData() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return null;
 
-    try {
-      final doc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .get();
-
-      if (doc.exists) {
-        return UserModel.fromFirestore(doc);
-        
-      }
-    } catch (e) {
-      debugPrint("Error fetching user data: $e");
-    }
-    return null;
-  }
-
-  Future<void> _showLogoutConfirmationDialog(BuildContext context) async {
-    return showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext dialogContext) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          title: const Text('Confirm Logout'),
-          content: const Text('Are you sure you want to log out?'),
-          actions: <Widget>[
-            TextButton(
-              child: const Text('Cancel'),
-              onPressed: () => Navigator.of(dialogContext).pop(),
-            ),
-            TextButton(
-              child: const Text('Logout', style: TextStyle(color: Colors.red)),
-              onPressed: () {
-                Navigator.of(dialogContext).pop();
-                _logout();
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _logout() async {
-    try {
-      await FirebaseAuth.instance.signOut();
-      if (!mounted) return;
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(
-          builder: (context) => PhoneNumberPage(),
-        ), // your login widget
-        (route) => false,
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to log out: $e')));
-      }
-    }
-  }
 
 
   Widget _buildHeader() {
@@ -122,7 +49,7 @@ class _AccountScreenState extends State<AccountScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: const [
           Text(
-            'Profile Page',
+            'Smart Synergies',
             textAlign: TextAlign.start,
             style: TextStyle(
               fontSize: 28,
@@ -132,7 +59,7 @@ class _AccountScreenState extends State<AccountScreen> {
           ),
           SizedBox(height: 4),
           Text(
-            'Manage Account',
+            'Pond Monitoring System',
             textAlign: TextAlign.start,
             style: TextStyle(
               fontSize: 16,
@@ -159,56 +86,24 @@ class _AccountScreenState extends State<AccountScreen> {
               _buildHeader(),
 
               // SizedBox(height: 20,),
-              FutureBuilder<UserModel?>(
-                future: _userDataFuture,
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return Center(
-                      heightFactor: 10,
-                      child: Center(
-                        child: Image.asset(
-                          "assets/loading.gif",
-                          width: 500,
-                          height: 300,
-                        ),
-                      ),
-                    );
-                  }
-                  if (snapshot.hasError) {
-                    return const Center(child: Text('An error occurred.'));
-                  }
-                  if (!snapshot.hasData || snapshot.data == null) {
-                    return const Center(
-                      child: Text('Could not load profile. Please try again.'),
-                    );
-                  }
-
-                  final userModel = snapshot.data!;
-
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16.0,
-                      vertical: 8.0,
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        const ClockWidget(), // Live clock widget
-                        const SizedBox(height: 16),
-                        _buildProfileHeader(userModel),
-                        const SizedBox(height: 24),
-                        _buildSectionTitle("Account Settings"),
-                        _buildMenuItems(userModel),
-                        const SizedBox(height: 24),
-                        _buildSectionTitle("Support"),
-                        _buildSupportMenuItems(),
-                        const SizedBox(height: 24),
-                        _buildLogoutButton(),
-                        const SizedBox(height: 16),
-                      ],
-                    ),
-                  );
-                },
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16.0,
+                  vertical: 8.0,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const ClockWidget(), // Live clock widget
+                    const SizedBox(height: 16),
+                    _buildSectionTitle("Account Settings"),
+                    _buildMenuItems(),
+                    const SizedBox(height: 24),
+                    _buildSectionTitle("Support"),
+                    _buildSupportMenuItems(),
+                    const SizedBox(height: 16),
+                  ],
+                ),
               ),
             ],
           ),
@@ -264,82 +159,7 @@ class _AccountScreenState extends State<AccountScreen> {
   //   );
   // }
 
-  Widget _buildProfileHeader(UserModel userModel) {
-    return Card(
-      elevation: 4,
-      shadowColor: Colors.black.withValues(alpha: 0.15),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Container(
-        padding: const EdgeInsets.all(12.0),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
-          gradient: AppColors.watergradient,
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const CircleAvatar(
-                  radius: 35, // smaller avatar
-                  backgroundColor: Colors.white,
-                  child: Icon(
-                    Icons.water_drop_sharp,
-                    size: 40,
-                    color: Colors.blue,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        userModel.name,
-                        style: const TextStyle(
-                          fontSize: 18, // smaller text
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        userModel.phoneNumber,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: Colors.black87,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Align(
-              alignment: Alignment.center,
-              child: Chip(
-                avatar: const Icon(
-                  Icons.calendar_today,
-                  size: 14,
-                  color: Colors.blue,
-                ),
-                label: Text(
-                  'Joined ${DateFormat('MMM d, yyyy').format(userModel.createdAt.toDate())}',
-                  style: const TextStyle(fontSize: 12, color: Colors.blue),
-                ),
-                backgroundColor: Colors.white,
-                visualDensity: VisualDensity.compact, // makes chip smaller
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+
 
   Widget _buildSectionTitle(String title) {
     return Padding(
@@ -356,29 +176,13 @@ class _AccountScreenState extends State<AccountScreen> {
     );
   }
 
- Widget _buildMenuItems(UserModel userModel) {
+  Widget _buildMenuItems() {
   return Card(
     elevation: 2,
     shadowColor: Colors.black.withValues(alpha: 0.1),
     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
     child: Column(
       children: [
-        // ✏️ Edit Profile
-        _buildMenuTile(
-          icon: Icons.edit_outlined,
-          title: 'Edit Profile',
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => PermissionCodeScreen(userModel: userModel),
-              ),
-            );
-          },
-        ),
-
-        const Divider(height: 1, indent: 16, endIndent: 16),
-
         // 🌐 Change Language (BUTTON ONLY)
         _buildMenuTile(
           icon: Icons.language_outlined,
@@ -480,19 +284,7 @@ class _AccountScreenState extends State<AccountScreen> {
     );
   }
 
-  Widget _buildLogoutButton() {
-    return ElevatedButton.icon(
-      icon: const Icon(Icons.logout, color: Colors.white),
-      label: const Text('Logout', style: TextStyle(color: Colors.white)),
-      onPressed: () => _showLogoutConfirmationDialog(context),
-      style: ElevatedButton.styleFrom(
-        backgroundColor: const Color.fromARGB(255, 228, 119, 119),
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        elevation: 2,
-      ),
-    );
-  }
+
 }
 
 // /// A widget that displays the current date and a live-updating clock.

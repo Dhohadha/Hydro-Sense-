@@ -1,6 +1,8 @@
 
 // --- DATA MODEL ---
 
+import 'package:flutter/material.dart';
+
 class WaterQualityData {
   final String deviceId;
   final double line1;
@@ -40,7 +42,15 @@ factory WaterQualityData.defaults() {
 
   // Factory constructor to create an instance from a JSON map.
   factory WaterQualityData.fromJson(Map<String, dynamic> json) {
-    final data = json['data'];
+    final rawData = json['data'];
+    
+    // If data is not a Map (e.g., when API returns "--" for no_data), return defaults
+    if (rawData is! Map<String, dynamic>) {
+      return WaterQualityData.defaults();
+    }
+
+    final data = rawData;
+    
     // Helper to safely parse numbers that might be int or double
     double parseDouble(dynamic value) {
       if (value is int) {
@@ -53,6 +63,19 @@ factory WaterQualityData.defaults() {
     }
     
 
+    // Safe timestamp parsing
+    DateTime parsedTimestamp = DateTime.now();
+    try {
+      if (data['timestamp'] != null && data['timestamp'] is Map) {
+        final seconds = data['timestamp']['_seconds'] ?? 0;
+        if (seconds != 0) {
+          parsedTimestamp = DateTime.fromMillisecondsSinceEpoch(seconds * 1000);
+        }
+      }
+    } catch (e) {
+      debugPrint('Warning: Failed to parse timestamp in WaterQualityData: $e');
+    }
+
     return WaterQualityData(
       deviceId: data['device_id'] ?? 'Unknown',
       line1: parseDouble(data['line1']),
@@ -62,9 +85,7 @@ factory WaterQualityData.defaults() {
       ph: parseDouble(data['ph']),
       dissolvedOxygen: parseDouble(data['do']),
       tds: parseDouble(data['tds']),
-      timestamp: DateTime.fromMillisecondsSinceEpoch(
-        (data['timestamp']['_seconds'] ?? 0) * 1000,
-      ),
+      timestamp: parsedTimestamp,
     );
   }
 }

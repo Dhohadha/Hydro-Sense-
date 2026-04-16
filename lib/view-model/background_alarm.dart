@@ -132,12 +132,24 @@ void backgroundAlarmCallback() async {
     await prefs.setBool(_alarmPlayingKey, true);
   }
 
+  // Respect the alert sound toggle set in the profile page
+  final bool alertSoundEnabled = prefs?.getBool('alert_sound_enabled') ?? true;
+
   try {
     sendPort?.send('Background alarm started at ${DateTime.now()}');
     prefs?.setString(
       'background_alarm_log',
       'Alarm callback started at ${DateTime.now()}',
     );
+
+    if (!alertSoundEnabled) {
+      // Sound disabled – do not start native service or play audio
+      prefs?.setString(
+        'background_alarm_log',
+        '${prefs.getString('background_alarm_log') ?? ''}\nAlert sound disabled – skipping audio',
+      );
+      return;
+    }
 
     if (Platform.isAndroid) {
       final MethodChannel channel = MethodChannel(
@@ -158,39 +170,22 @@ void backgroundAlarmCallback() async {
             '${prefs.getString('background_alarm_log') ?? ''}\nError native service: $e',
           );
         }
+        await bgPlayer.setReleaseMode(ReleaseMode.loop); // ✅ set BEFORE play
         await bgPlayer.play(AssetSource('alarm.mp3'));
-        bgPlayer.setReleaseMode(ReleaseMode.loop);
       }
     } else {
+      await bgPlayer.setReleaseMode(ReleaseMode.loop); // ✅ set BEFORE play
       await bgPlayer.play(AssetSource('alarm.mp3'));
-      bgPlayer.setReleaseMode(ReleaseMode.loop);
     }
 
-    // Keep alarm for up to 30 seconds unless the app/user stops it sooner
-    await Future.delayed(const Duration(seconds: 30));
-
-    if (Platform.isAndroid) {
-      final MethodChannel channel = MethodChannel(
-        'com.yubhiantech.pondmonitoring/alarm',
-      );
-      try {
-        await channel.invokeMethod('stopAlarm');
-      } catch (_) {
-        await bgPlayer.stop();
-      }
-    } else {
-      await bgPlayer.stop();
-    }
-
+    // Alarm will ring indefinitely until stopped by the user.
     if (prefs != null) {
-      // Clear playing flag so future notifications can retrigger
-      prefs.setBool(_alarmPlayingKey, false);
       prefs.setString(
         'background_alarm_log',
-        '${prefs.getString('background_alarm_log') ?? ''}\nAlarm sequence completed',
+        '${prefs.getString('background_alarm_log') ?? ''}\nAlarm ringing continuously until stopped by user',
       );
     }
-    sendPort?.send('Background alarm stopped after 30 seconds');
+    sendPort?.send('Background alarm ringing continuously');
   } catch (e) {
     sendPort?.send('Error in background alarm: $e');
     if (prefs != null) {

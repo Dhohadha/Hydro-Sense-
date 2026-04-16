@@ -1,15 +1,127 @@
+import 'dart:convert';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/material.dart'; // Import for AlertDialog
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:http/http.dart' as http;
+import 'package:googleapis_auth/auth_io.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:gf1/view-model/background_alarm.dart';
 import 'package:gf1/model/notification_model.dart';
 import 'package:gf1/view/services/local_notification_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:gf1/view/services/device_service.dart';
 
-// --- ADD THIS GLOBAL KEY ---
+// --- GLOBAL NAVIGATOR KEY ---
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
+// --- LOCAL NOTIFICATIONS PLUGIN ---
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+    FlutterLocalNotificationsPlugin();
+
+/// Initialize local notifications with Stop Alarm action button.
+/// Call this once from main() before runApp.
+Future<void> initLocalNotifications() async {
+  const AndroidInitializationSettings androidSettings =
+      AndroidInitializationSettings('@mipmap/launcher_icon');
+
+  const InitializationSettings initSettings = InitializationSettings(
+    android: androidSettings,
+  );
+
+  await flutterLocalNotificationsPlugin.initialize(
+    initSettings,
+    onDidReceiveNotificationResponse: _onNotificationAction,
+    onDidReceiveBackgroundNotificationResponse: _onNotificationActionBackground,
+  );
+
+  // Create alarm notification channel
+  const AndroidNotificationChannel channel = AndroidNotificationChannel(
+    'alarm_channel',
+    'Alarm Notifications',
+    description: 'Aerator alert notifications',
+    importance: Importance.max,
+    playSound: true,
+    enableVibration: true,
+  );
+  await flutterLocalNotificationsPlugin
+      .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(channel);
+}
+
+/// Show a local notification with a STOP ALARM action button.
+Future<void> showAlarmNotification({
+  required String title,
+  required String body,
+}) async {
+  const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+    'alarm_channel',
+    'Alarm Notifications',
+    channelDescription: 'Aerator alert notifications',
+    importance: Importance.max,
+    priority: Priority.max,
+    fullScreenIntent: true,
+    ongoing: true,
+    autoCancel: false,
+    actions: <AndroidNotificationAction>[
+      AndroidNotificationAction(
+        'stop_alarm', // action id
+        '🛑 Stop Alarm',
+        cancelNotification: true,
+        showsUserInterface: false,
+      ),
+    ],
+  );
+
+  const NotificationDetails notificationDetails = NotificationDetails(
+    android: androidDetails,
+  );
+
+  await flutterLocalNotificationsPlugin.show(
+    888, // fixed id so we can cancel it
+    title,
+    body,
+    notificationDetails,
+    payload: 'alarm',
+  );
+}
+
+/// Cancel the alarm notification (call when alarm is stopped)
+Future<void> cancelAlarmNotification() async {
+  await flutterLocalNotificationsPlugin.cancel(888);
+}
+
+/// Handles notification action taps (foreground / background)
+@pragma('vm:entry-point')
+void _onNotificationActionBackground(NotificationResponse response) async {
+  if (response.actionId == 'stop_alarm') {
+    // Stop native alarm service
+    try {
+      const platform = MethodChannel('com.yubhiantech.pondmonitoring/alarm');
+      await platform.invokeMethod('stopAlarm');
+    } catch (_) {}
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('alarm_playing', false);
+    await cancelAlarmNotification();
+  }
+}
+
+void _onNotificationAction(NotificationResponse response) async {
+  if (response.actionId == 'stop_alarm') {
+    try {
+      const platform = MethodChannel('com.yubhiantech.pondmonitoring/alarm');
+      await platform.invokeMethod('stopAlarm');
+    } catch (_) {}
+    try {
+      await stopBackgroundAlarm();
+    } catch (_) {}
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('alarm_playing', false);
+    await cancelAlarmNotification();
+  }
+}
 
 class NotificationServices {
   final _firebaseMessaging = FirebaseMessaging.instance;
@@ -47,6 +159,19 @@ class NotificationServices {
       await _saveTokenToPrefs(newToken);
     });
 
+    // 1. Handle Cold Start (App launched from terminated state via notification)
+    RemoteMessage? initialMessage = await _firebaseMessaging.getInitialMessage();
+    if (initialMessage != null) {
+      debugPrint('FCM: App launched from terminated state via message');
+      _handleNotificationClick(initialMessage);
+    }
+
+    // 2. Handle Resume (App in background but not terminated)
+    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+      debugPrint('FCM: App resumed from background via message');
+      _handleNotificationClick(message);
+    });
+
     FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
       // Foreground: trigger same background alarm path (with duplicate guard and timed stop)
       debugPrint(
@@ -72,24 +197,57 @@ class NotificationServices {
           await initBackgroundAlarm();
           await triggerBackgroundAlarm();
         }
+        // Always show local notification with Stop button regardless of sound setting
+        await showAlarmNotification(
+          title: message.notification?.title ?? '⚠️ Aerator Alert!',
+          body: alertSoundEnabled
+              ? (message.notification?.body ?? 'Tap to stop alarm.')
+              : (message.notification?.body ?? 'Alert received.'),
+        );
         _showForegroundAlert(message);
       } catch (e) {
         debugPrint('Failed to trigger alarm in foreground: $e');
       }
     });
 
-    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) async {
-      debugPrint('A new onMessageOpenedApp event was published!');
-      debugPrint('Message data: ${message.data}');
-      // Persist again (id-based de-dup keeps list clean)
-      try {
-        final notification = NotificationModel.fromRemoteMessage(message);
-        await LocalNotificationService.saveNotification(notification);
-      } catch (e) {
-        debugPrint('Failed to save openedApp notification: $e');
+  }
+
+  /// Unified handler for notification clicks (Cold Start & Resume)
+  void _handleNotificationClick(RemoteMessage message) async {
+    debugPrint('Handling notification click. Data: ${message.data}');
+
+    // Persist to local storage so it shows in Notifications screen
+    try {
+      final notification = NotificationModel.fromRemoteMessage(message);
+      await LocalNotificationService.saveNotification(notification);
+    } catch (e) {
+      debugPrint('Failed to save clicked notification: $e');
+    }
+
+    // Determine the route based on the 'alarm' flag or content
+    final bool isAlarm = message.data['alarm'] == '1';
+    final String routeName = isAlarm ? '/alarm' : '/notifications';
+    final Map<String, dynamic> arguments = {
+      'title': message.notification?.title ?? 'Alert',
+      'body': message.notification?.body ?? '',
+      'isFromNotification': true, // signal AlarmScreen to show Stop dialog
+    };
+
+    // Ensure navigator is ready. 
+    // If it's a cold start, we might need a small delay for the app to build.
+    Future.microtask(() async {
+      int retryCount = 0;
+      while (navigatorKey.currentState == null && retryCount < 10) {
+        await Future.delayed(const Duration(milliseconds: 200));
+        retryCount++;
       }
-      // On tap from system notification, navigate but do not duplicate storage or sound
-      navigatorKey.currentState?.pushNamed('/notifications');
+
+      if (navigatorKey.currentState != null) {
+        debugPrint('Navigating to $routeName');
+        navigatorKey.currentState?.pushNamed(routeName, arguments: arguments);
+      } else {
+        debugPrint('ERROR: Navigator state still null after retries');
+      }
     });
   }
 
@@ -109,16 +267,16 @@ class NotificationServices {
         actions: [
           TextButton(
             onPressed: () async {
-              await _stopAlarmNow();
+              await stopAlarmNow();
               if (dialogContext.mounted) Navigator.of(dialogContext).pop();
             },
             child: const Text('Stop'),
           ),
           TextButton(
             onPressed: () async {
-              await _stopAlarmNow();
+              await stopAlarmNow();
               if (dialogContext.mounted) Navigator.of(dialogContext).pop();
-              navigatorKey.currentState?.pushNamed('/notifications');
+              _handleNotificationClick(message);
             },
             child: const Text('View'),
           ),
@@ -128,7 +286,7 @@ class NotificationServices {
   }
 
   /// Stop native alarm service and clear playing flags
-  Future<void> _stopAlarmNow() async {
+  Future<void> stopAlarmNow() async {
     try {
       const platform = MethodChannel('com.yubhiantech.pondmonitoring/alarm');
       await platform.invokeMethod('stopAlarm');
@@ -138,6 +296,8 @@ class NotificationServices {
     } catch (_) {}
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('alarm_playing', false);
+    // Also dismiss the persistent local notification with the Stop button
+    await cancelAlarmNotification();
   }
 
   // Local persistence of notifications disabled per requirement to rely on backend notifications only.
@@ -148,25 +308,27 @@ class NotificationServices {
     await prefs.setString(_tokenKey, token);
     debugPrint("FCM Token saved to SharedPreferences.");
 
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
+    // FCM Token registration for "no-user" architecture
+    // Each device saves under its own unique document (keyed by FCM token)
+    // but shares the same deviceId field, so the server's query finds ALL devices.
+    final deviceId = await DeviceService.getDeviceId();
+    if (deviceId != null && deviceId.isNotEmpty) {
       try {
-        final userDoc = FirebaseFirestore.instance
+        // Use the token hash as doc ID so each install gets its own document
+        final docId = 'fcm_${token.hashCode.toRadixString(16)}';
+        await FirebaseFirestore.instance
             .collection('users')
-            .doc(user.uid);
-
-        // Always update/merge → will create if not exists, update if exists
-        await userDoc.set({
+            .doc(docId)
+            .set({
           'fcmToken': token,
+          'deviceId': deviceId,
           'updatedAt': FieldValue.serverTimestamp(),
+          'isNoUserMode': true,
         }, SetOptions(merge: true));
-
-        debugPrint("✅ FCM Token saved/updated in Firestore for user: ${user.uid}");
+        debugPrint("✅ FCM Token registered in Firestore for device: $deviceId (doc: $docId)");
       } catch (e) {
-        debugPrint("❌ Error saving FCM token to Firestore: $e");
+        debugPrint("❌ Failed to register FCM token in Firestore: $e");
       }
-    } else {
-      debugPrint("⚠️ No logged-in user, token not saved to Firestore.");
     }
   }
 
@@ -178,45 +340,44 @@ class NotificationServices {
   /// Ensure Firestore user document contains the latest FCM token.
   /// Call this after login or app resume.
   static Future<void> ensureTokenSynced() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
+    final token = await getDeviceToken();
+    if (token == null) return;
 
-    final prefs = await SharedPreferences.getInstance();
-    final localToken = prefs.getString(_tokenKey);
-    final currentToken = await FirebaseMessaging.instance.getToken();
+    final deviceId = await DeviceService.getDeviceId();
+    if (deviceId == null || deviceId.isEmpty) return;
 
-    final tokenToUse = currentToken ?? localToken;
-    if (tokenToUse == null) return;
-
-    final docRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
     try {
+      // Use the token hash as doc ID so each install gets its own document
+      final docId = 'fcm_${token.hashCode.toRadixString(16)}';
+      final docRef = FirebaseFirestore.instance.collection('users').doc(docId);
       final snap = await docRef.get();
-      final remoteToken = snap.data()?['fcmToken'];
-      if (remoteToken != tokenToUse) {
+
+      if (!snap.exists || snap.data()?['fcmToken'] != token) {
         await docRef.set({
-          'fcmToken': tokenToUse,
+          'fcmToken': token,
+          'deviceId': deviceId,
           'updatedAt': FieldValue.serverTimestamp(),
+          'isNoUserMode': true,
         }, SetOptions(merge: true));
+        debugPrint("✅ FCM Token sync complete for device: $deviceId (doc: $docId)");
       }
     } catch (e) {
-      debugPrint('FCM token sync failed: $e');
+      debugPrint("❌ FCM Token sync failed: $e");
     }
   }
 
-  // --- SECURITY WARNING REMAINS ---
-  // Future<AccessCredentials> _getAccessToken() async {
-  //   final serviceAccountPath = dotenv.env['PATH_TO_SECRET'];
-  //   // SECURITY NOTE: Consider moving this off-device in production.
-  //   String serviceAccountJson = await rootBundle.loadString(
-  //     serviceAccountPath!,
-  //   );
-  //   final serviceAccount = ServiceAccountCredentials.fromJson(
-  //     serviceAccountJson,
-  //   );
-  //   final scopes = ['https://www.googleapis.com/auth/firebase.messaging'];
-  //   final client = await clientViaServiceAccount(serviceAccount, scopes);
-  //   return client.credentials;
-  // }
+  Future<AccessCredentials> _getAccessToken() async {
+    final serviceAccountPath = dotenv.env['PATH_TO_SECRET'];
+    String serviceAccountJson = await rootBundle.loadString(
+      serviceAccountPath!,
+    );
+    final serviceAccount = ServiceAccountCredentials.fromJson(
+      serviceAccountJson,
+    );
+    final scopes = ['https://www.googleapis.com/auth/firebase.messaging'];
+    final client = await clientViaServiceAccount(serviceAccount, scopes);
+    return client.credentials;
+  }
 
   Future<bool> sendPushNotification({
     required String deviceToken,
@@ -224,11 +385,53 @@ class NotificationServices {
     required String body,
     Map<String, dynamic>? data,
   }) async {
-    debugPrint(
-      '🔒 SECURITY: Client-side push notifications are disabled for production. '
-      'Please implement this logic on a secure backend (e.g., Firebase Cloud Functions).'
-    );
-    return false; // Disabled intentionally
+    try {
+      final projectId = dotenv.env['PROJECT_ID'];
+      final String endpoint =
+          'https://fcm.googleapis.com/v1/projects/$projectId/messages:send';
+
+      final credentials = await _getAccessToken();
+
+      final Map<String, dynamic> message = {
+        'message': {
+          'token': deviceToken,
+          'notification': {
+            'title': title,
+            'body': body,
+          },
+          'data': data ?? {},
+          'android': {
+            'notification': {
+              'sound': 'alarm',
+              'channel_id': 'alarm_channel',
+              'click_action': 'FLUTTER_NOTIFICATION_CLICK',
+            },
+            'priority': 'high',
+          },
+        }
+      };
+
+      final response = await http.post(
+        Uri.parse(endpoint),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${credentials.accessToken.data}',
+        },
+        body: jsonEncode(message),
+      );
+
+      if (response.statusCode == 200) {
+        debugPrint('Notification sent successfully');
+        return true;
+      } else {
+        debugPrint('Failed to send notification: ${response.statusCode}');
+        debugPrint(response.body);
+        return false;
+      }
+    } catch (e) {
+      debugPrint('Error sending notification: $e');
+      return false;
+    }
   }
 
 }

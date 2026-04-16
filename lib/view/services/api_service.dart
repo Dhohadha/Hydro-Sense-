@@ -1,8 +1,6 @@
 
 
 import 'dart:convert';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:gf1/model/water_quality_model.dart';
 import 'package:http/http.dart' as http;
@@ -12,22 +10,7 @@ class ApiService {
   static const String _updateUrl = "https://www.gfiotsolutions.com/api/users/update";
 
   Future<String?> _fetchDeviceId() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return null;
-
-    try {
-      final doc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .get();
-
-      if (doc.exists) {
-        return doc.data()?['deviceId'] as String?;
-      }
-    } catch (e) {
-      debugPrint("Error fetching deviceId: $e");
-    }
-    return null;
+    return 'vishnu2';
   }
 
   /// GET call
@@ -45,6 +28,8 @@ class ApiService {
         final jsonData = json.decode(response.body);
         if (jsonData['status'] == 'ok' && jsonData['data'] != null) {
           return WaterQualityData.fromJson(jsonData);
+        } else if (jsonData['status'] == 'no_data') {
+          return WaterQualityData.defaults();
         } else {
           throw Exception('API returned an error or no data');
         }

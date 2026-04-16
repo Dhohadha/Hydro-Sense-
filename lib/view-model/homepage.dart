@@ -11,7 +11,6 @@ import 'package:gf1/view/services/device_service.dart';
 import 'package:gf1/view/services/mqtt_service.dart';
 import 'package:gf1/view/widgets/notification_badge.dart';
 import 'pond_monitoring_page.dart';
-import 'capacitors.dart';
 import '../view/utils/color_constants.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
@@ -51,7 +50,6 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
     _pages = [
       HomePage(),
       PondMonitoringPage(),
-      CapacitorPage(),
       AccountScreen(),
     ];
   }
@@ -73,9 +71,7 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
           CurvedNavigationBarItem(
               child: FaIcon(FontAwesomeIcons.fan), label: 'Aeriator'),
           CurvedNavigationBarItem(
-              child: Icon(Icons.notifications), label: 'Alerts'),
-          CurvedNavigationBarItem(
-              child: Icon(Icons.bolt), label: 'Capacitors'),
+              child: Icon(Icons.monitor), label: 'Monitoring'),
           CurvedNavigationBarItem(
               child: Icon(Icons.person), label: 'Account'),
         ],
@@ -422,7 +418,9 @@ Widget _buildStatusPill() {
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
+                      
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -513,105 +511,23 @@ Widget _buildStatusPill() {
     return Column(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: [
-
-        // Line 1 aerator card - compact
-       AeratorControlCard(
-  title: "Line 1 Aerators",
-  status: line1Status,
-  animStatus: line1Confirmed,   // animation control
-  isLoading: line1Loading,
-  useGradient: true, // ⭐
-  onToggle: () {
-  setState(() {
-    line1Status = !line1Status; // 🔘 toggle moves immediately
-    line1Loading = true;        // ⏳ show loading inside toggle
-  });
-  _sendAeratorCommand();
-},
-
-
-),
-
-      AeratorControlCard(
-  title: "Line 2 Aerators",
-status: line2Status,          // toggle position
-  animStatus: line2Confirmed,   // animation control
-  isLoading: line2Loading,   // ✅ correct variable
-  useGradient: false,  // optional: keep Line 1 special
-  onToggle: () {
-  setState(() {
-    line2Status = !line2Status;
-    line2Loading = true; 
-  });
-  _sendAeratorCommand();
-},
-
-),
-
-
-
-        // Compact Master Control
-        Container(
-          width: double.infinity,
-          decoration: BoxDecoration(
-             gradient: LinearGradient(
-                    colors: [
-                AppColors.accentSoft.withValues(alpha: 0.8),
-                    AppColors.accentSoft.withValues(alpha: 0.5),
-                  ],
-                        begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  ),
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                color: const Color.fromARGB(255, 58, 102, 183).withValues(alpha: 0.3),
-                blurRadius: 8,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: () {
-  setState(() {
-    bool newState = !(line1Status || line2Status);
-    line1Status = newState;
-line2Status = newState;
-line1Loading = true;
-line2Loading = true;
-
-  });
-  _sendAeratorCommand();
-},
-
-              borderRadius: BorderRadius.circular(16),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.power_settings_new,
-                      color: Colors.white,
-                      size: 24,
-                    ),
-                    const SizedBox(width: 10),
-                    Text(
-                      "Master Control",
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
+        // Unified aerator card
+        AeratorControlCard(
+          title: "All Aerators",
+          status: line1Status || line2Status,
+          animStatus: line1Confirmed || line2Confirmed,
+          isLoading: line1Loading || line2Loading,
+          useGradient: true,
+          onToggle: () {
+            setState(() {
+              bool newState = !(line1Status || line2Status);
+              line1Status = newState;
+              line2Status = newState;
+              line1Loading = true;
+              line2Loading = true;
+            });
+            _sendAeratorCommand();
+          },
         ),
       ],
     );
